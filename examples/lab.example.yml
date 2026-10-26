@@ -1,9 +1,9 @@
 ---
-# Copiar a group_vars/all/lab.yml (ignorado). CIDR reales de la red privada.
-# Ejemplo ilustrativo, reemplazar antes del despliegue.
+# Archivo de ejemplo. Copia a group_vars/all/lab.yml (ignorado por git).
+# IMPORTANTE: cambia todos los valores segun ip -br addr / firewall-cmd.
+lab_firewall_zone: public
 lab_client_cidrs:
   - '192.0.2.10/32'
 postgresql_client_cidrs:
   - '192.0.2.10/32'
-# DNS o IP que coincida con el SAN del certificado servidor PostgreSQL.
-postgresql_server_name: 'aso-destino.local'
+postgresql_server_name: aso-destino.local

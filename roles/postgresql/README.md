@@ -1,27 +1,43 @@
-# Rol PostgreSQL para openSUSE Leap 16.0
+# PostgreSQL para openSUSE Leap 16.0
 
-Instala PostgreSQL, cliente, python313-psycopg2, php8-pgsql. Detecta el directorio
-real de datos después del inicio con systemd; no ejecuta `initdb` sobre un cluster
-existente ni elimina configuraciones de otros usuarios.
+Este rol conserva el despliegue del equipo, instala servidor/cliente, adaptador
+Python y PHP PostgreSQL, activa TLS y añade reglas HBA por usuario y base.
 
-Crea `postgres` con contraseña protegida en Vault, `aso_user` y `aso_db`.
-Activa TLS usando material generado en el controlador, y restringe el acceso en
-pg_hba.conf a `postgresql_client_cidrs` por `hostssl ... scram-sha-256`.
+## Requisitos privados
 
-Es obligatorio crear certificados locales en `secrets/postgres` (ignorado por
-Git), con SAN que coincida con `postgresql_server_name` y la IP real. Ejecuta
-`scripts/generate-postgres-lab-certs.sh aso-destino.local IP_ACTUAL`.
+Antes de ejecutar: `group_vars/all/vault.yml` cifrado con
+`vault_postgresql_admin_password` y `vault_postgresql_app_password`, y
+`group_vars/all/lab.yml` con `postgresql_client_cidrs` reales y
+`postgresql_server_name`. Generar la CA y el certificado SAN con
+`scripts/generate-postgres-lab-certs.sh` desde la controladora. Los archivos
+`secrets/postgres/*.key` deben permanecer excluidos del control de versiones.
 
-Se requiere demostrar desde otra máquina en el laboratorio:
+## Aplicación
 
-```sh
-PGPASSWORD='CLAVE_INTERACTIVA' psql 'host=aso-destino.local port=5432 dbname=aso_db user=aso_user sslmode=verify-full sslrootcert=secrets/postgres/ca.crt' -c 'SELECT ssl,version,cipher FROM pg_stat_ssl WHERE pid=pg_backend_pid();'
+- Obtiene los parámetros con `SELECT current_setting('data_directory'),
+  current_setting('hba_file')`, sin suponer rutas de Debian.
+- Arranca la unidad `postgresql` empaquetada en openSUSE para el primer
+  clúster. No ejecuta initdb destructivo si ya existen datos; exige PG_VERSION.
+- Usa `community.postgresql.postgresql_alter_system` para configurar TLS,
+  SCRAM y dirección de escucha, notificando reinicio solo cuando cambia algo.
+- Crea `aso_user` sin privilegios administrativos y `aso_db`.
+- Rechaza TCP sin TLS para el usuario gestionado, y admite conexiones TLS
+  únicamente desde CIDR autorizados (más loopback para prueba local).
+- Ejecuta comprobación local de `SHOW ssl`, sintaxis HBA, módulos PHP CLI y
+  PDO TLS. Prueba extensiones PHP bajo Apache mediante archivo temporal que
+  se elimina incluso cuando la prueba falla.
+
+## Verificación desde un cliente de la red autorizada
+
+Usar `.pgpass` privado con `chmod 600`, nunca contraseñas en línea de comandos:
+
+```bash
+bash scripts/check-postgres-tls.sh aso-destino.local
 ```
 
-En ejecución real, no teclear secretos en comandos visibles ni guardarlos en el
-historial: usar un `.pgpass` privado (0600) o `PGPASSWORD` leído de un gestor de
-credenciales en el entorno de laboratorio.
+`sslmode=verify-full` debe autenticar certificado y nombre del servidor; el
+script confirma `pg_stat_ssl.ssl = true` y prueba rechazo de SSL desactivado.
+Para verificar cortafuegos revisar `firewall-cmd --list-all` en la zona activa.
 
-El acceso TCP sin TLS se rechaza para la base/usuario manejados. El firewall
-solo abre PostgreSQL desde CIDR privados declarados; no se admiten valores por
-defecto. Se deben hacer pruebas reales en una VM limpia para completar Task 5.
+**Pendiente:** comprobar con `zypper se -s` nombres de paquetes efectivos,
+probar sobre la VM limpia, reiniciar y ejecutar dos veces (idempotencia).

@@ -1,35 +1,36 @@
 ---
-- name: Exigir clientes autorizados y certificado TLS disponible
+- name: Exigir configuracion privada y secretos PostgreSQL
   ansible.builtin.assert:
     that:
+      - postgresql_client_cidrs is defined
       - postgresql_client_cidrs | length > 0
       - postgresql_server_name is defined
       - postgresql_server_name | length > 0
       - vault_postgresql_admin_password is defined
       - vault_postgresql_app_password is defined
-    fail_msg: 'Faltan CIDR, nombre TLS o secretos de PostgreSQL (Vault).'
+    fail_msg: 'Define postgresql_client_cidrs, postgresql_server_name y secretos en Vault.'
   no_log: true
 
-- name: Verificar que existen certificados y clave en la controladora
+- name: Verificar archivos TLS en la controladora
   ansible.builtin.stat:
-    path: "{{ item }}"
+    path: '{{ item }}'
   delegate_to: localhost
   become: false
   loop:
-    - "{{ postgresql_tls_cert_src }}"
-    - "{{ postgresql_tls_key_src }}"
-    - "{{ postgresql_tls_ca_src }}"
+    - '{{ postgresql_tls_cert_src }}'
+    - '{{ postgresql_tls_key_src }}'
+    - '{{ postgresql_tls_ca_src }}'
   register: postgresql_cert_files
+  no_log: true
 
-- name: Exigir material TLS ya creado localmente
+- name: Exigir certificado, clave y CA de laboratorio
   ansible.builtin.assert:
-    that:
-      - item.stat.exists
-      - item.stat.isreg
-    fail_msg: 'Crea certificados privados con scripts/generate-postgres-lab-certs.sh'
-  loop: "{{ postgresql_cert_files.results }}"
+    that: [item.stat.exists, item.stat.isreg]
+    fail_msg: 'Genera primero los certificados con scripts/generate-postgres-lab-certs.sh.'
+  loop: '{{ postgresql_cert_files.results }}'
+  no_log: true
 
-- name: Instalar servidor, cliente, adaptador Python y modulo PHP PostgreSQL
+- name: Instalar PostgreSQL cliente y servidor, psycopg y extension PHP
   ansible.builtin.zypper:
     name:
       - postgresql
@@ -38,145 +39,217 @@
       - php8-pgsql
       - openssl
     state: present
+  notify: Reiniciar Apache
 
-- name: Habilitar e iniciar PostgreSQL (la unidad empaquetada inicializa el cluster)
+# En openSUSE el arranque de la unidad empaquetada prepara el primer cluster.
+# Nunca ejecutar initdb sobre datos preexistentes: verificar a continuacion.
+- name: Habilitar e iniciar unidad PostgreSQL empaquetada por openSUSE
   ansible.builtin.systemd:
-    name: "{{ postgresql_service }}"
-    state: started
+    name: '{{ postgresql_service }}'
     enabled: true
+    state: started
 
-- name: Consultar ubicacion real del cluster de PostgreSQL
+- name: Obtener rutas reales PostgreSQL desde el servidor
   ansible.builtin.command:
-    argv: [psql, -tA, -d, postgres, -c, 'SHOW data_directory;']
+    argv:
+      - psql
+      - -tA
+      - -d
+      - postgres
+      - -c
+      - "SELECT current_setting('data_directory'), current_setting('hba_file');"
   become_user: postgres
-  register: postgresql_data_dir_cmd
   changed_when: false
+  register: pg_config_paths
 
-- name: Definir directorio real detectado
+- name: Guardar rutas reales de cluster y HBA
   ansible.builtin.set_fact:
-    postgresql_data_dir: "{{ postgresql_data_dir_cmd.stdout | trim }}"
+    postgresql_data_dir: "{{ (pg_config_paths.stdout | trim).split('|')[0] }}"
+    postgresql_hba_file: "{{ (pg_config_paths.stdout | trim).split('|')[1] }}"
 
-- name: Rechazar path vacio o cluster no inicializado
+- name: Exigir un cluster valido antes de tocar sus archivos
+  ansible.builtin.stat:
+    path: '{{ postgresql_data_dir }}/PG_VERSION'
+  register: pg_initialized
+
+- name: Comprobar cluster inicializado y rutas seguras
   ansible.builtin.assert:
     that:
-      - postgresql_data_dir | length > 4
       - postgresql_data_dir.startswith('/var/lib/pgsql/')
+      - postgresql_hba_file.startswith('/var/lib/pgsql/')
+      - pg_initialized.stat.exists
+    fail_msg: 'Cluster no inicializado o configuracion en rutas imprevistas; no tocar datos existentes.'
 
-- name: Preparar carpeta de certificados con propiedad PostgreSQL
+- name: Preparar carpeta TLS propiedad de postgres
   ansible.builtin.file:
-    path: "{{ postgresql_tls_dir }}"
+    path: '{{ postgresql_tls_dir }}'
     state: directory
     owner: postgres
     group: postgres
     mode: '0700'
 
-- name: Copiar certificado del servidor firmado por CA del laboratorio
+- name: Instalar certificado de servidor
   ansible.builtin.copy:
-    src: "{{ postgresql_tls_cert_src }}"
-    dest: "{{ postgresql_tls_dir }}/server.crt"
+    src: '{{ postgresql_tls_cert_src }}'
+    dest: '{{ postgresql_tls_dir }}/server.crt'
     owner: postgres
     group: postgres
     mode: '0644'
   notify: Reiniciar PostgreSQL
 
-- name: Copiar clave privada del servidor sin publicarla ni mostrarla
+- name: Instalar clave privada restringida
   ansible.builtin.copy:
-    src: "{{ postgresql_tls_key_src }}"
-    dest: "{{ postgresql_tls_dir }}/server.key"
+    src: '{{ postgresql_tls_key_src }}'
+    dest: '{{ postgresql_tls_dir }}/server.key'
     owner: postgres
     group: postgres
     mode: '0600'
   no_log: true
   notify: Reiniciar PostgreSQL
 
-- name: Publicar certificado CA para referencia local
+- name: Instalar certificado de CA para comprobaciones
   ansible.builtin.copy:
-    src: "{{ postgresql_tls_ca_src }}"
-    dest: "{{ postgresql_tls_dir }}/ca.crt"
+    src: '{{ postgresql_tls_ca_src }}'
+    dest: '{{ postgresql_tls_dir }}/ca.crt'
     owner: postgres
     group: postgres
     mode: '0644'
 
-- name: Definir parametros de configuracion PostgreSQL sin destruir postgresql.conf
-  community.postgresql.postgresql_set:
-    name: "{{ item.name }}"
-    value: "{{ item.value }}"
+- name: Configurar parametros PostgreSQL con modulo no deprecado
+  community.postgresql.postgresql_alter_system:
+    param: '{{ item.param }}'
+    value: '{{ item.value }}'
   become_user: postgres
   loop:
-    - { name: password_encryption, value: scram-sha-256 }
-    - { name: listen_addresses, value: "{{ postgresql_listen_addresses }}" }
-    - { name: ssl, value: 'on' }
-    - { name: ssl_min_protocol_version, value: TLSv1.2 }
-    - { name: ssl_cert_file, value: "{{ postgresql_tls_dir }}/server.crt" }
-    - { name: ssl_key_file, value: "{{ postgresql_tls_dir }}/server.key" }
+    - { param: password_encryption, value: scram-sha-256 }
+    - { param: listen_addresses, value: '{{ postgresql_listen_addresses }}' }
+    - { param: ssl, value: 'on' }
+    - { param: ssl_min_protocol_version, value: TLSv1.2 }
+    - { param: ssl_cert_file, value: '{{ postgresql_tls_dir }}/server.crt' }
+    - { param: ssl_key_file, value: '{{ postgresql_tls_dir }}/server.key' }
   notify: Reiniciar PostgreSQL
 
-- name: Crear contrasena del administrador PostgreSQL sin exponerla
+- name: Configurar contrasena del administrador postgres
   community.postgresql.postgresql_user:
     name: postgres
-    password: "{{ vault_postgresql_admin_password }}"
+    password: '{{ vault_postgresql_admin_password }}'
     encrypted: true
     state: present
   become_user: postgres
   no_log: true
 
-- name: Crear usuario PostgreSQL para la aplicacion
+- name: Crear usuario de aplicacion sin privilegios administrativos
   community.postgresql.postgresql_user:
-    name: "{{ postgresql_app_user }}"
-    password: "{{ vault_postgresql_app_password }}"
+    name: '{{ postgresql_app_user }}'
+    password: '{{ vault_postgresql_app_password }}'
     encrypted: true
-    role_attr_flags: LOGIN
+    role_attr_flags: LOGIN,NOSUPERUSER,NOCREATEDB,NOCREATEROLE,NOREPLICATION
     state: present
   become_user: postgres
   no_log: true
 
-- name: Crear base PostgreSQL con propietario especifico
+- name: Crear base de datos con propietario de aplicacion
   community.postgresql.postgresql_db:
-    name: "{{ postgresql_db_name }}"
-    owner: "{{ postgresql_app_user }}"
+    name: '{{ postgresql_db_name }}'
+    owner: '{{ postgresql_app_user }}'
     encoding: UTF-8
     state: present
   become_user: postgres
 
-- name: Insertar reglas HBA restrictivas antes de las reglas genericas
+- name: Instalar reglas HBA TLS antes de reglas genericas
   ansible.builtin.blockinfile:
-    path: "{{ postgresql_data_dir }}/pg_hba.conf"
+    path: '{{ postgresql_hba_file }}'
     insertbefore: BOF
-    marker: '# {mark} ANSIBLE ASO TLS'
+    marker: '# {mark} ASO TLS MANAGED'
     block: |
+      # Rechazar todas las conexiones TCP sin TLS al usuario de aplicacion.
+      hostnossl all {{ postgresql_app_user }} 0.0.0.0/0 reject
+      hostnossl all {{ postgresql_app_user }} ::0/0 reject
       {% for cidr in postgresql_client_cidrs %}
       hostssl {{ postgresql_db_name }} {{ postgresql_app_user }} {{ cidr }} scram-sha-256
       {% endfor %}
-      hostnossl {{ postgresql_db_name }} {{ postgresql_app_user }} 0.0.0.0/0 reject
-      hostnossl {{ postgresql_db_name }} {{ postgresql_app_user }} ::0/0 reject
-      host {{ postgresql_db_name }} {{ postgresql_app_user }} 0.0.0.0/0 reject
-      host {{ postgresql_db_name }} {{ postgresql_app_user }} ::0/0 reject
+      hostssl {{ postgresql_db_name }} {{ postgresql_app_user }} 127.0.0.1/32 scram-sha-256
+      hostssl {{ postgresql_db_name }} {{ postgresql_app_user }} ::1/128 scram-sha-256
+      host all {{ postgresql_app_user }} 0.0.0.0/0 reject
+      host all {{ postgresql_app_user }} ::0/0 reject
     owner: postgres
     group: postgres
     mode: '0600'
+    backup: true
   notify: Reiniciar PostgreSQL
 
-- name: Reiniciar servicio si han cambiado configuraciones TLS o acceso
+- name: Aplicar configuracion y reiniciar solo cuando cambie
   ansible.builtin.meta: flush_handlers
 
-- name: Verificar SSL encendido en el servidor PostgreSQL
+- name: Comprobar SSL activo
   ansible.builtin.command:
     argv: [psql, -tA, -d, postgres, -c, 'SHOW ssl;']
   become_user: postgres
-  register: postgresql_ssl_test
   changed_when: false
-  failed_when: postgresql_ssl_test.rc != 0 or (postgresql_ssl_test.stdout | trim) != 'on'
+  register: pg_ssl_result
+  failed_when: pg_ssl_result.rc != 0 or (pg_ssl_result.stdout | trim) != 'on'
 
-- name: Verificar que PHP tiene cargada la extension PostgreSQL
+- name: Validar parseo de reglas pg_hba.conf
   ansible.builtin.command:
-    argv: [php, -r, 'if (!extension_loaded("pgsql") || !extension_loaded("pdo_pgsql")) { exit(1); } echo "pgsql OK\n";']
+    argv:
+      - psql
+      - -tA
+      - -d
+      - postgres
+      - -c
+      - 'SELECT count(*) FROM pg_hba_file_rules WHERE error IS NOT NULL;'
+  become_user: postgres
+  register: pg_hba_result
+  changed_when: false
+  failed_when: pg_hba_result.rc != 0 or (pg_hba_result.stdout | trim) != '0'
+
+- name: Verificar extensiones PHP instaladas
+  ansible.builtin.command:
+    argv: [php, -r, 'if (!extension_loaded("pgsql") || !extension_loaded("pdo_pgsql")) exit(1);']
   changed_when: false
 
-- name: Limitar acceso PostgreSQL a subredes autorizadas
+- name: Comprobar conexion PDO a PostgreSQL con TLS
+  ansible.builtin.command:
+    argv:
+      - php
+      - -r
+      - >-
+        $db = new PDO('pgsql:host=127.0.0.1;port={{ postgresql_port }};dbname={{ postgresql_db_name }};sslmode=require',
+        getenv('PGUSER'), getenv('PGPASSWORD'));
+        if ($db->query('SELECT 1')->fetchColumn() != 1) { exit(1); }
+  environment:
+    PGUSER: '{{ postgresql_app_user }}'
+    PGPASSWORD: '{{ vault_postgresql_app_password }}'
+  no_log: true
+  changed_when: false
+
+- name: Comprobar modulo PHP de Apache mediante prueba HTTP temporal
+  block:
+    - name: Publicar temporalmente probe de extensiones sin datos sensibles
+      ansible.builtin.copy:
+        dest: /srv/www/htdocs/aso-php-pgsql-check.php
+        owner: root
+        group: root
+        mode: '0644'
+        content: "<?php http_response_code(extension_loaded('pgsql') && extension_loaded('pdo_pgsql') ? 200 : 500); echo 'ASO_PGSQL_EXTENSIONS'; ?>"
+    - name: Solicitar probe PHP desde Apache en localhost
+      ansible.builtin.uri:
+        url: http://127.0.0.1/aso-php-pgsql-check.php
+        status_code: 200
+        return_content: true
+      register: php_http_probe
+      failed_when: php_http_probe.status != 200 or (php_http_probe.content | trim) != 'ASO_PGSQL_EXTENSIONS'
+  always:
+    - name: Borrar probe inmediatamente de la web
+      ansible.builtin.file:
+        path: /srv/www/htdocs/aso-php-pgsql-check.php
+        state: absent
+
+- name: Permitir puerto PostgreSQL solo desde cliente autorizado
   ansible.posix.firewalld:
-    zone: "{{ lab_firewall_zone | default('public') }}"
+    zone: '{{ lab_firewall_zone }}'
     rich_rule: 'rule family="ipv4" source address="{{ item }}" port port="{{ postgresql_port }}" protocol="tcp" accept'
     permanent: true
     immediate: true
     state: enabled
-  loop: "{{ postgresql_client_cidrs }}"
+  loop: '{{ postgresql_client_cidrs }}'

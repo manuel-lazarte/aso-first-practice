@@ -22,7 +22,7 @@ conservan como antecedente. **Ejecucion recomendada**: `deploy.yml`.
 git clone https://github.com/manuel-lazarte/aso-first-practice.git
 cd aso-first-practice
 ansible-galaxy collection install -r requirements.yml
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
 ssh-copy-id ale@IP_ACTUAL_DESTINO
 ssh ale@IP_ACTUAL_DESTINO
 ```
@@ -153,3 +153,55 @@ No publicar certificados privados, Vault ni credenciales.
 **Estado:** la revisión estática y los archivos no equivalen a haber probado
 el despliegue en la VM. Task 3, Task 4 y Task 5 solamente se aprueban con
 pruebas reales desde un snapshot limpio.
+
+## 7. Correcciones de validación final (rama fix/aso-final-validation)
+
+- El inventario `hosts` usa exclusivamente el alias `aso-destino`; cada persona
+  lo configura en `~/.ssh/config`. No se guardan IP de Manuel ni secretos.
+- Copia `examples/lab.example.yml` a `group_vars/all/lab.yml` y cambia
+  **antes** del despliegue la zona firewalld, las redes privadas (se exige
+  al menos /24 o /32) y el nombre DNS válido del certificado PostgreSQL.
+  Las redes reservadas de documentación se rechazan intencionalmente.
+- `roles/firewall` elimina autorizaciones generales previas para HTTP, Samba,
+  FTP y PostgreSQL **en la zona elegida** y crea reglas por origen. Comprueba
+  `firewall-cmd --get-active-zones` y `firewall-cmd --zone=ZONA --list-all`;
+  otras zonas y políticas externas requieren auditoría manual.
+- FTP usa `/usr/sbin/nologin` para evitar acceso shell interactivo e incluye
+  dicho shell en `/etc/shells` para compatibilidad con `pam_shells`. La prueba
+  de autenticación FTP y rechazo de acceso SSH es obligatoria.
+- SELinux configura `public_content_t` / `public_content_rw_t` y el booleano
+  limitado `ftpd_anon_write`, **solo si realmente existe**. Aunque incluya
+  'anon' en el nombre, autoriza escritura sobre ese tipo SELinux; no habilita
+  usuarios FTP anónimos (`anonymous_enable=NO`). Si la política no lo tiene,
+  Ansible falla explícitamente para que se evalúe una política específica.
+- PostgreSQL usa `community.postgresql.postgresql_alter_system` y detecta
+  `data_directory`/`hba_file` en el servidor. La unidad empaquetada de openSUSE
+  inicializa el primer cluster al arrancar; si falla, revisar `journalctl`
+  antes de intentar `initdb` manualmente, nunca reinicializar datos existentes.
+  La prueba PDO usa TLS. El test HTTP temporal verifica las extensiones bajo
+  Apache y elimina el archivo de diagnóstico incluso cuando falla.
+- Para verificar **que no hay reglas globales** examina tanto servicios/puertos
+  directos como `rich rules`: `sudo firewall-cmd --zone=ZONA --list-all`.
+- Se mantiene la protección de llaves SSH, Ansible Vault y material TLS. No
+  publicar certificados privados ni archivos `group_vars/all/lab.yml`.
+
+### Preparación de defensas y pruebas estáticas
+
+Desde la controladora openSUSE16, dentro del repo, una vez ajustados los
+archivos privados:
+
+```bash
+ansible-galaxy collection install -r requirements.yml
+ansible-galaxy collection list
+ansible-inventory -i hosts --graph
+ansible-playbook -i hosts deploy.yml --syntax-check --ask-vault-pass
+ansible-lint deploy.yml  # solo si ansible-lint esta instalado
+ansible servidor -m ping
+ansible-playbook deploy.yml -K --ask-vault-pass
+ansible-playbook deploy.yml -K --ask-vault-pass
+```
+
+Estas pruebas aun **no se han ejecutado contra ASO-Destino** desde ChatGPT.
+Antes de la defensa comprueba con `zypper se -s` la disponibilidad real de
+`postgresql-server`, `python313-psycopg2`, `php8-pgsql` y
+`policycoreutils-python-utils` en los repositorios configurados de Leap 16.

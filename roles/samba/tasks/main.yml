@@ -27,6 +27,7 @@
     owner: root
     group: sambashare
     mode: '2770'
+  register: samba_share_created
 
 - name: Detectar SELinux habilitado
   ansible.builtin.command: getenforce
@@ -44,7 +45,7 @@
 
 - name: Restaurar etiquetas Samba cuando cambie regla
   ansible.builtin.command: restorecon -RF /srv/samba/compartido
-  when: samba_context is changed
+  when: samba_context is changed or samba_share_created is changed
 
 - name: Publicar configuracion Samba
   ansible.builtin.template:
@@ -66,20 +67,22 @@
   ansible.builtin.command:
     argv: [pdbedit, -L, -u, usuario_samba]
   register: samba_check
-  failed_when: samba_check.rc not in [0, 1]
+  # La consulta devuelve error cuando el usuario NO existe; no oculta fallos
+  # de creación posteriores y solo se usa para decidir si darlo de alta.
+  failed_when: false
   changed_when: false
 
 - name: Crear cuenta Samba solo si no existe
   ansible.builtin.command:
     argv: [smbpasswd, -s, -a, usuario_samba]
     stdin: "{{ vault_samba_password }}\n{{ vault_samba_password }}"
-  when: samba_check.rc != 0
+  when: samba_check.rc != 0 or 'usuario_samba:' not in samba_check.stdout
   no_log: true
 
 - name: Habilitar cuenta Samba cuando se ha creado
   ansible.builtin.command:
     argv: [smbpasswd, -e, usuario_samba]
-  when: samba_check.rc != 0
+  when: samba_check.rc != 0 or 'usuario_samba:' not in samba_check.stdout
   no_log: true
 
 - name: Comprobar configuracion de Samba

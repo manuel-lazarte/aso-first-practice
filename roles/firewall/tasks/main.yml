@@ -1,19 +1,53 @@
 ---
-- name: Instalar firewalld y bindings Python
+- name: Validar parametros de las redes del laboratorio
+  ansible.builtin.assert:
+    that:
+      - lab_client_cidrs is defined
+      - lab_client_cidrs | length > 0
+      - postgresql_client_cidrs is defined
+      - postgresql_client_cidrs | length > 0
+      - lab_firewall_zone is defined
+      - lab_firewall_zone | length > 0
+    fail_msg: 'Define CIDR reales y lab_firewall_zone en group_vars/all/lab.yml.'
+
+# Se rechazan CIDR de Internet y redes demasiado amplias. La subred del
+# laboratorio puede ser una IP /32 o una LAN privada de prefijo >= 24.
+- name: Verificar redes privadas IPv4 y no demasiado amplias
+  ansible.builtin.command:
+    argv:
+      - python3
+      - -c
+      - >-
+        import ipaddress, sys;
+        net=ipaddress.ip_network(sys.argv[1], strict=False);
+        assert net.version == 4 and net.prefixlen >= 24 and net.is_private and not any(net.subnet_of(ipaddress.ip_network(t)) for t in ['192.0.2.0/24','198.51.100.0/24','203.0.113.0/24'])
+      - '{{ item }}'
+  loop: '{{ (lab_client_cidrs + postgresql_client_cidrs) | unique | list }}'
+  delegate_to: localhost
+  become: false
+  changed_when: false
+
+- name: Instalar firewalld y sus bibliotecas Python
   ansible.builtin.zypper:
     name:
       - firewalld
       - python3-firewall
     state: present
 
-# La VM de destino exige SSH autorizado antes de la primera ejecucion.
-- name: Conservar acceso SSH en la zona publica antes del arranque
+- name: Consultar estado de firewalld antes de configurarlo
+  ansible.builtin.command: systemctl is-active firewalld
+  register: aso_firewalld_before
+  changed_when: false
+  failed_when: aso_firewalld_before.rc not in [0, 3]
+
+- name: Preautorizar SSH si firewalld estaba detenido
   ansible.posix.firewalld:
     service: ssh
-    zone: public
+    zone: '{{ lab_firewall_zone }}'
     permanent: true
     offline: true
     state: enabled
+  when: aso_firewalld_before.rc == 3
 
 - name: Habilitar e iniciar firewalld
   ansible.builtin.systemd:
@@ -21,11 +55,57 @@
     enabled: true
     state: started
 
-- name: Autorizar HTTP solo desde CIDR del laboratorio
+- name: Consultar zona asociada a la interfaz principal
+  ansible.builtin.command:
+    argv:
+      - firewall-cmd
+      - --get-zone-of-interface
+      - '{{ ansible_facts.default_ipv4.interface }}'
+  register: aso_active_zone
+  changed_when: false
+  failed_when: false
+
+- name: Rechazar configuracion de una zona distinta de la interfaz del destino
+  ansible.builtin.assert:
+    that:
+      - aso_active_zone.rc != 0 or (aso_active_zone.stdout | trim) == lab_firewall_zone
+    fail_msg: >-
+      Zona firewalld diferente de lab_firewall_zone. Verifica con
+      firewall-cmd --get-active-zones y corrige lab.yml antes de continuar.
+
+- name: Conservar acceso SSH en la zona autorizada
   ansible.posix.firewalld:
-    zone: "{{ lab_firewall_zone | default('public') }}"
+    service: ssh
+    zone: '{{ lab_firewall_zone }}'
+    permanent: true
+    immediate: true
+    state: enabled
+
+# Eliminar reglas GENERICAS (no los servicios del sistema); las reglas rich
+# con origen CIDR de los roles son las unicas que admiten estos protocolos.
+- name: Eliminar aperturas generales de los servicios de laboratorio
+  ansible.posix.firewalld:
+    service: '{{ item }}'
+    zone: '{{ lab_firewall_zone }}'
+    permanent: true
+    immediate: true
+    state: disabled
+  loop: [http, ftp, samba, postgresql]
+
+- name: Eliminar aperturas generales TCP previamente aplicadas
+  ansible.posix.firewalld:
+    port: '{{ item }}'
+    zone: '{{ lab_firewall_zone }}'
+    permanent: true
+    immediate: true
+    state: disabled
+  loop: ['21/tcp', '5432/tcp', '30000-30010/tcp']
+
+- name: Autorizar HTTP solo a clientes del laboratorio
+  ansible.posix.firewalld:
+    zone: '{{ lab_firewall_zone }}'
     rich_rule: 'rule family="ipv4" source address="{{ item }}" service name="http" accept'
     permanent: true
     immediate: true
     state: enabled
-  loop: "{{ lab_client_cidrs }}"
+  loop: '{{ lab_client_cidrs }}'

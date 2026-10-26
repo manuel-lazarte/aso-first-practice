@@ -1,71 +1,98 @@
 ---
-- name: Instalar vsftpd y herramientas de SELinux
+- name: Instalar vsftpd y utilidades para contextos SELinux
   ansible.builtin.zypper:
     name:
       - vsftpd
       - policycoreutils-python-utils
     state: present
 
-- name: Crear grupo del usuario FTP
+- name: Crear grupo FTP
   ansible.builtin.group:
-    name: "{{ ftp_user_name }}"
+    name: '{{ ftp_user_name }}'
     state: present
 
-- name: Crear usuario FTP limitado por lista blanca
+- name: Registrar nologin como shell valido para PAM pam_shells
+  ansible.builtin.lineinfile:
+    path: /etc/shells
+    line: /usr/sbin/nologin
+    state: present
+
+- name: Crear cuenta FTP sin shell interactivo
   ansible.builtin.user:
-    name: "{{ ftp_user_name }}"
-    group: "{{ ftp_user_name }}"
-    home: "{{ ftp_root }}"
+    name: '{{ ftp_user_name }}'
+    group: '{{ ftp_user_name }}'
+    home: '{{ ftp_root }}'
     create_home: false
-    shell: /bin/bash
-    password: "{{ vault_ftp_password_hash }}"
+    shell: /usr/sbin/nologin
+    password: '{{ vault_ftp_password_hash }}'
     state: present
   no_log: true
 
-- name: Raiz FTP no escribible para chroot
+- name: Crear directorio raiz del chroot no escribible por el usuario
   ansible.builtin.file:
-    path: "{{ ftp_root }}"
+    path: '{{ ftp_root }}'
     state: directory
     owner: root
     group: root
     mode: '0755'
+  register: ftp_root_created
 
-- name: Crear directorio para subidas
+- name: Crear subdirectorio de cargas con permiso de escritura
   ansible.builtin.file:
-    path: "{{ ftp_root }}/subidas"
+    path: '{{ ftp_root }}/subidas'
     state: directory
-    owner: "{{ ftp_user_name }}"
-    group: "{{ ftp_user_name }}"
+    owner: '{{ ftp_user_name }}'
+    group: '{{ ftp_user_name }}'
     mode: '0750'
+  register: ftp_upload_created
 
-- name: Etiquetar raiz FTP para SELinux
+- name: Detectar SELinux local
+  ansible.builtin.command: getenforce
+  register: ftp_selinux_mode
+  changed_when: false
+  failed_when: ftp_selinux_mode.rc not in [0, 1]
+
+- name: Etiquetar todo el chroot FTP de forma persistente
   community.general.sefcontext:
-    target: "{{ ftp_root }}/?"
+    target: '{{ ftp_root }}(/.*)?'
     setype: public_content_t
     state: present
   register: ftp_root_context
-  when: ansible_facts.selinux is defined and ansible_facts.selinux.status == 'enabled'
+  when: ftp_selinux_mode.stdout in ['Enforcing', 'Permissive']
 
-- name: Etiquetar area de escritura FTP
+- name: Etiquetar subidas FTP como directorio de escritura
   community.general.sefcontext:
-    target: "{{ ftp_root }}/subidas(/.*)?"
+    target: '{{ ftp_root }}/subidas(/.*)?'
     setype: public_content_rw_t
     state: present
   register: ftp_upload_context
-  when: ansible_facts.selinux is defined and ansible_facts.selinux.status == 'enabled'
+  when: ftp_selinux_mode.stdout in ['Enforcing', 'Permissive']
 
-- name: Permitir escritura FTP sobre public_content_rw_t bajo SELinux
-  community.general.seboolean:
+# ftpD_anon_write es una autorizacion SELinux para public_content_rw_t
+# tanto en subidas locales como anonimas. NO habilitamos FTP anonimo ni
+# permitimos ftpd_full_access, que seria demasiado amplio.
+- name: Comprobar si SELinux dispone del booleano de escritura FTP restringida
+  ansible.builtin.command: getsebool ftpd_anon_write
+  register: ftp_write_boolean
+  changed_when: false
+  when: ftp_selinux_mode.stdout in ['Enforcing', 'Permissive']
+
+- name: Habilitar escritura solo en tipo public_content_rw_t
+  ansible.posix.seboolean:
     name: ftpd_anon_write
     state: true
     persistent: true
-  when: ansible_facts.selinux is defined and ansible_facts.selinux.status == 'enabled'
+  when: ftp_selinux_mode.stdout in ['Enforcing', 'Permissive']
 
-- name: Aplicar contextos FTP al crearse reglas
-  ansible.builtin.command: "restorecon -RF {{ ftp_root }}"
-  when: ftp_root_context is changed or ftp_upload_context is changed
+- name: Aplicar etiquetas cuando se crearon rutas o cambiaron politicas
+  ansible.builtin.command:
+    argv: [restorecon, -RF, '{{ ftp_root }}']
+  changed_when: true
+  when:
+    - ftp_selinux_mode.stdout in ['Enforcing', 'Permissive']
+    - ftp_root_created is changed or ftp_upload_created is changed or ftp_root_context is changed or ftp_upload_context is changed
 
-- name: Publicar usuario permitido
+- name: Permitir acceso FTP solamente al usuario dedicado
   ansible.builtin.copy:
     dest: /etc/vsftpd.user_list
     content: "{{ ftp_user_name }}\n"
@@ -74,7 +101,7 @@
     mode: '0600'
   notify: Reiniciar vsftpd
 
-- name: Publicar template FTP
+- name: Aplicar configuracion vsftpd versionada
   ansible.builtin.template:
     src: vsftpd.conf.j2
     dest: /etc/vsftpd.conf
@@ -84,26 +111,26 @@
     backup: true
   notify: Reiniciar vsftpd
 
-- name: Habilitar e iniciar vsftpd
+- name: Habilitar e iniciar FTP
   ansible.builtin.systemd:
     name: vsftpd
-    enabled: true
     state: started
+    enabled: true
 
-- name: Abrir puerto FTP de control solo desde la red privada
+- name: Permitir control FTP solamente desde clientes autorizados
   ansible.posix.firewalld:
-    zone: "{{ lab_firewall_zone | default('public') }}"
+    zone: '{{ lab_firewall_zone }}'
     rich_rule: 'rule family="ipv4" source address="{{ item }}" service name="ftp" accept'
     permanent: true
     immediate: true
     state: enabled
-  loop: "{{ lab_client_cidrs }}"
+  loop: '{{ lab_client_cidrs }}'
 
-- name: Abrir puertos de FTP pasivo solo desde la red privada
+- name: Permitir rango pasivo FTP solo a clientes autorizados
   ansible.posix.firewalld:
-    zone: "{{ lab_firewall_zone | default('public') }}"
+    zone: '{{ lab_firewall_zone }}'
     rich_rule: 'rule family="ipv4" source address="{{ item }}" port port="{{ ftp_passive_min_port }}-{{ ftp_passive_max_port }}" protocol="tcp" accept'
     permanent: true
     immediate: true
     state: enabled
-  loop: "{{ lab_client_cidrs }}"
+  loop: '{{ lab_client_cidrs }}'
