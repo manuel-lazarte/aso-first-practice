@@ -20,16 +20,19 @@
     cmd: mariadb-admin ping
   changed_when: false
 
-- name: Crear base de datos simulacion_db
-  community.mysql.mysql_db:
-    name: simulacion_db
+- name: Crear usuario y permisos MariaDB
+  community.mysql.mysql_user:
+    name: simulacion_user
+    host: localhost
+    password: "{{ vault_db_password }}"
+    priv: "simulacion_db.*:ALL"
     state: present
-    encoding: utf8mb4
     login_user: mysql
     login_unix_socket: /run/mysql/mysql.sock
     config_file: ''
   become: true
   become_user: mysql
+  no_log: true
 
 - name: Crear o actualizar usuario y permisos MariaDB
   ansible.builtin.command:
