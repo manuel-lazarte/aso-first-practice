@@ -1,0 +1,7 @@
+---
+- name: Preparar Samba en openSUSE
+  hosts: servidor
+  become: true
+
+  roles:
+    - samba

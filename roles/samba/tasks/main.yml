@@ -1,0 +1,85 @@
+---
+- name: Instalar Samba
+  ansible.builtin.zypper:
+    name:
+      - samba
+      - samba-client
+    state: present
+
+- name: Crear grupo para compartir archivos
+  ansible.builtin.group:
+    name: sambashare
+    state: present
+
+- name: Crear usuario del sistema para Samba
+  ansible.builtin.user:
+    name: usuario_samba
+    group: sambashare
+    shell: /usr/sbin/nologin
+    create_home: false
+    state: present
+
+- name: Crear directorio compartido
+  ansible.builtin.file:
+    path: /srv/samba/compartido
+    state: directory
+    owner: root
+    group: sambashare
+    mode: '2770'
+- name: Configurar recurso compartido Samba
+  ansible.builtin.template:
+    src: smb.conf.j2
+    dest: /etc/samba/smb.conf
+    owner: root
+    group: root
+    mode: '0644'
+    backup: true
+  notify: Reiniciar Samba
+
+- name: Verificar configuracion Samba
+  ansible.builtin.command:
+    cmd: testparm -s
+  changed_when: false
+
+- name: Habilitar e iniciar Samba
+  ansible.builtin.systemd:
+    name: smb
+    enabled: true
+    state: started
+- name: Comprobar si existe usuario Samba
+  ansible.builtin.command:
+    argv:
+      - pdbedit
+      - -L
+      - -u
+      - usuario_samba
+  register: samba_usuario
+  failed_when: false
+  changed_when: false
+
+- name: Registrar usuario Samba con contraseña
+  ansible.builtin.command:
+    argv:
+      - smbpasswd
+      - -s
+      - -a
+      - usuario_samba
+    stdin: "{{ vault_samba_password }}\n{{ vault_samba_password }}"
+    stdin_add_newline: true
+  when: samba_usuario.rc != 0
+  no_log: true
+
+- name: Habilitar usuario Samba
+  ansible.builtin.command:
+    argv:
+      - smbpasswd
+      - -e
+      - usuario_samba
+  when: samba_usuario.rc != 0
+  no_log: true
+- name: Permitir Samba en el firewall
+  ansible.posix.firewalld:
+    service: samba
+    permanent: true
+    immediate: true
+    state: enabled

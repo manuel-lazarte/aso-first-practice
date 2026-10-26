@@ -1,0 +1,23 @@
+---
+- name: Instalar y configurar vsftpd en openSUSE
+  hosts: all
+  become: yes
+  tasks:
+
+    - name: Actualizar repositorios
+      ansible.builtin.zypper:
+          name: '*'
+          state: latest
+          update_cache: yes
+
+
+    - name: Instalar vsftpd
+      ansible.builtin.zypper:
+        name: vsftpd
+        state: present
+
+    - name: Asegurar que el servicio vsftpd está habilitado e iniciado
+      ansible.builtin.systemd:
+        name: vsftpd
+        enabled: yes
+        state: started

@@ -1,0 +1,5 @@
+---
+- hosts: all # Se dirige a todos los servidores listados en el inventario
+  tasks:
+    - name: Hacer un ping a todos los hosts # Nombre descriptivo de la tarea
+      ping: # Módulo de Ansible para hacer ping a los hosts

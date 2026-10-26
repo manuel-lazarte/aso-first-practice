@@ -1,0 +1,31 @@
+---
+- name: Instalar Apache
+  ansible.builtin.zypper:
+    name: apache2
+    state: present
+
+- name: Habilitar e iniciar Apache
+  ansible.builtin.systemd:
+    name: apache2
+    enabled: true
+    state: started
+
+- name: Crear página web de prueba
+  ansible.builtin.copy:
+    dest: /srv/www/htdocs/index.html
+    content: |
+      <!DOCTYPE html>
+      <html lang="es">
+      <head>
+        <meta charset="UTF-8">
+        <title>Apache con Ansible</title>
+      </head>
+      <body>
+        <h1>Apache desplegado con Ansible</h1>
+        <p>Servidor: openSUSE 16.0</p>
+        <p>Task 3 - LAMP/Samba</p>
+      </body>
+      </html>
+    owner: root
+    group: root
+    mode: '0644'

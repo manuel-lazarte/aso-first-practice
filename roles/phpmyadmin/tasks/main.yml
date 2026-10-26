@@ -1,0 +1,14 @@
+---
+- name: Instalar phpMyAdmin y su integracion con Apache
+  ansible.builtin.zypper:
+    name:
+      - phpMyAdmin
+      - phpMyAdmin-apache
+    state: present
+  notify: Reiniciar Apache
+
+- name: Verificar que Apache esta funcionando
+  ansible.builtin.systemd:
+    name: apache2
+    state: started
+    enabled: true

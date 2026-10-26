@@ -1,0 +1,19 @@
+[global]
+    workgroup = WORKGROUP
+    server string = Servidor Samba Ansible
+    security = user
+    server role = standalone server
+    map to guest = Never
+    server min protocol = SMB2
+
+[compartido]
+    comment = Carpeta compartida con Ansible
+    path = /srv/samba/compartido
+    browseable = yes
+    read only = no
+    guest ok = no
+    valid users = usuario_samba
+
+    force group = sambashare
+    create mask = 0660
+    directory mask = 0770

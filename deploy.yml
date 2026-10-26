@@ -1,0 +1,10 @@
+---
+- name: Desplegar LAMP y Samba en openSUSE
+  hosts: servidor
+  become: true
+
+  roles:
+    - apache
+    - php
+    - mariadb
+    - phpmyadmin

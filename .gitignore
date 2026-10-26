@@ -1,0 +1,22 @@
+# Credenciales y archivos privados
+group_vars/all/vault.yml
+*.pem
+*.key
+*.retry
+
+# Copias de seguridad
+*.bak
+*.backup
+*~
+
+# Archivos temporales
+*.log
+*.tmp
+__pycache__/
+*.pyc
+
+# Pruebas de diagnostico
+prueba_sql.yml
+prueba_usuario_db.yml
+
+/ans_aso/

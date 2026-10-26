@@ -1,0 +1,5 @@
+---
+- name: Reiniciar Samba
+  ansible.builtin.systemd:
+    name: smb
+    state: restarted
