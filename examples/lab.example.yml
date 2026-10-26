@@ -1,9 +1,9 @@
 ---
-# Archivo de ejemplo. Copia a group_vars/all/lab.yml (ignorado por git).
-# IMPORTANTE: cambia todos los valores segun ip -br addr / firewall-cmd.
+# COPIAR a group_vars/all/lab.yml (ignorado). Sustituir TODO por datos reales.
 lab_firewall_zone: public
 lab_client_cidrs:
-  - '192.0.2.10/32'
+  - '192.0.2.10/32'  # DOCUMENTACION: se rechaza hasta que cambies por RFC1918
 postgresql_client_cidrs:
   - '192.0.2.10/32'
 postgresql_server_name: aso-destino.local
+postgresql_server_ip: '192.0.2.20'  # IP actual del SAN, NO la IP histórica

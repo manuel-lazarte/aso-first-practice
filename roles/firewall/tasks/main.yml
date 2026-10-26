@@ -1,107 +1,106 @@
 ---
-- name: Validar parametros de las redes del laboratorio
+# El firewall del laboratorio es sensible: nunca borramos reglas de otros.
+- name: Exigir zona y listas de redes explícitas
   ansible.builtin.assert:
     that:
+      - lab_firewall_zone is defined
+      - lab_firewall_zone | length > 0
       - lab_client_cidrs is defined
       - lab_client_cidrs | length > 0
       - postgresql_client_cidrs is defined
       - postgresql_client_cidrs | length > 0
-      - lab_firewall_zone is defined
-      - lab_firewall_zone | length > 0
-    fail_msg: 'Define CIDR reales y lab_firewall_zone en group_vars/all/lab.yml.'
+    fail_msg: 'Configura group_vars/all/lab.yml con zona y CIDR reales.'
 
-# Se rechazan CIDR de Internet y redes demasiado amplias. La subred del
-# laboratorio puede ser una IP /32 o una LAN privada de prefijo >= 24.
-- name: Verificar redes privadas IPv4 y no demasiado amplias
+- name: Comprobar que todas las redes son subredes RFC1918 entre /24 y /32
   ansible.builtin.command:
     argv:
       - python3
-      - -c
-      - >-
-        import ipaddress, sys;
-        net=ipaddress.ip_network(sys.argv[1], strict=False);
-        assert net.version == 4 and net.prefixlen >= 24 and net.is_private and not any(net.subnet_of(ipaddress.ip_network(t)) for t in ['192.0.2.0/24','198.51.100.0/24','203.0.113.0/24'])
+      - '{{ playbook_dir }}/scripts/validate-lab-cidrs.py'
       - '{{ item }}'
-  loop: '{{ (lab_client_cidrs + postgresql_client_cidrs) | unique | list }}'
   delegate_to: localhost
   become: false
+  loop: '{{ (lab_client_cidrs + postgresql_client_cidrs) | unique | list }}'
   changed_when: false
 
-- name: Instalar firewalld y sus bibliotecas Python
+- name: Instalar firewalld y bindings
   ansible.builtin.zypper:
     name:
       - firewalld
       - python3-firewall
     state: present
 
-- name: Consultar estado de firewalld antes de configurarlo
+- name: Averiguar si firewalld está activo
   ansible.builtin.command: systemctl is-active firewalld
-  register: aso_firewalld_before
+  register: aso_firewall_state
   changed_when: false
-  failed_when: aso_firewalld_before.rc not in [0, 3]
+  failed_when: aso_firewall_state.rc not in [0, 3]
 
-- name: Preautorizar SSH si firewalld estaba detenido
+- name: Preparar SSH antes de activar firewalld
   ansible.posix.firewalld:
-    service: ssh
     zone: '{{ lab_firewall_zone }}'
+    service: ssh
     permanent: true
     offline: true
     state: enabled
-  when: aso_firewalld_before.rc == 3
+  when: aso_firewall_state.rc == 3
 
 - name: Habilitar e iniciar firewalld
   ansible.builtin.systemd:
     name: firewalld
-    enabled: true
     state: started
+    enabled: true
 
-- name: Consultar zona asociada a la interfaz principal
-  ansible.builtin.command:
-    argv:
-      - firewall-cmd
-      - --get-zone-of-interface
-      - '{{ ansible_facts.default_ipv4.interface }}'
-  register: aso_active_zone
-  changed_when: false
-  failed_when: false
-
-- name: Rechazar configuracion de una zona distinta de la interfaz del destino
+- name: Asegurar que se detectó una interfaz IPv4 por defecto
   ansible.builtin.assert:
     that:
-      - aso_active_zone.rc != 0 or (aso_active_zone.stdout | trim) == lab_firewall_zone
-    fail_msg: >-
-      Zona firewalld diferente de lab_firewall_zone. Verifica con
-      firewall-cmd --get-active-zones y corrige lab.yml antes de continuar.
+      - ansible_facts.default_ipv4.interface is defined
+    fail_msg: 'No se detectó interfaz IPv4. Revisa el bridge antes de editar el firewall.'
 
-- name: Conservar acceso SSH en la zona autorizada
+- name: Consultar zona de la interfaz de salida de la VM
+  ansible.builtin.command:
+    argv: [firewall-cmd, --get-zone-of-interface, '{{ ansible_facts.default_ipv4.interface }}']
+  register: aso_actual_zone
+  changed_when: false
+
+- name: Rechazar una zona distinta de la declarada
+  ansible.builtin.assert:
+    that:
+      - (aso_actual_zone.stdout | trim) == lab_firewall_zone
+    fail_msg: 'Zona real distinta de lab_firewall_zone. No se modificó la zona.'
+
+# Nunca eliminar reglas generales que podrían pertenecer a otros servicios.
+# Si existen, fallar indicando al administrador qué debe revisar.
+- name: Leer servicios generales de la zona permanente
+  ansible.builtin.command:
+    argv: [firewall-cmd, '--zone={{ lab_firewall_zone }}', --permanent, --list-services]
+  register: aso_general_services
+  changed_when: false
+
+- name: Leer puertos generales de la zona permanente
+  ansible.builtin.command:
+    argv: [firewall-cmd, '--zone={{ lab_firewall_zone }}', --permanent, --list-ports]
+  register: aso_general_ports
+  changed_when: false
+
+- name: Evitar servicios publicados globalmente antes de crear reglas propias
+  ansible.builtin.assert:
+    that:
+      - (aso_general_services.stdout.split() | intersect(['http','ftp','samba','postgresql'])) | length == 0
+      - (aso_general_ports.stdout.split() | intersect(['21/tcp','80/tcp','139/tcp','445/tcp','5432/tcp','30000-30010/tcp'])) | length == 0
+    fail_msg: >-
+      La zona {{ lab_firewall_zone }} tiene servicios/puertos generales de ASO.
+      Revísalos con firewall-cmd --zone={{ lab_firewall_zone }} --list-all
+      y --permanent --list-all; no se eliminan automáticamente reglas ajenas.
+
+- name: Conservar el servicio SSH en la zona esperada
   ansible.posix.firewalld:
-    service: ssh
     zone: '{{ lab_firewall_zone }}'
+    service: ssh
     permanent: true
     immediate: true
     state: enabled
 
-# Eliminar reglas GENERICAS (no los servicios del sistema); las reglas rich
-# con origen CIDR de los roles son las unicas que admiten estos protocolos.
-- name: Eliminar aperturas generales de los servicios de laboratorio
-  ansible.posix.firewalld:
-    service: '{{ item }}'
-    zone: '{{ lab_firewall_zone }}'
-    permanent: true
-    immediate: true
-    state: disabled
-  loop: [http, ftp, samba, postgresql]
-
-- name: Eliminar aperturas generales TCP previamente aplicadas
-  ansible.posix.firewalld:
-    port: '{{ item }}'
-    zone: '{{ lab_firewall_zone }}'
-    permanent: true
-    immediate: true
-    state: disabled
-  loop: ['21/tcp', '5432/tcp', '30000-30010/tcp']
-
-- name: Autorizar HTTP solo a clientes del laboratorio
+- name: Autorizar HTTP solamente desde los CIDR declarados
   ansible.posix.firewalld:
     zone: '{{ lab_firewall_zone }}'
     rich_rule: 'rule family="ipv4" source address="{{ item }}" service name="http" accept'

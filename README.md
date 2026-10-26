@@ -1,34 +1,33 @@
-# ASO: despliegue automatizado LAMP + Samba + FTP + PostgreSQL (openSUSE Leap 16.0)
+# ASO — Tasks 3, 4 y 5 (openSUSE Leap 16.0)
 
-**Repositorio existente**: manuel-lazarte/aso-first-practice. Incluye Tasks 3, 4 y
-5. Los playbooks antiguos (`playbook.yml`, `playbook2.yml`, `playbook3.yml`) se
-conservan como antecedente. **Ejecucion recomendada**: `deploy.yml`.
+Repositorio académico grupal: `manuel-lazarte/aso-first-practice`. `deploy.yml` es el único playbook principal de despliegue. Los playbooks `playbook*.yml` y `probar_samba.yml` son prácticas antiguas/auxiliares y **no** sustituyen `deploy.yml`.
 
-## 1. Infraestructura y prerrequisitos
+## Arquitectura y límites
 
-- **Controladora:** openSUSE Leap 16.0 con Ansible Core y acceso a Internet
-  para instalar colecciones. Ejecutar `sudo zypper in ansible openssh-clients openssl postgresql` si
-  falta alguna herramienta y verificar nombres mediante `zypper search`.
-- **Destino:** `ASO-Destino`, VM limpia openSUSE Leap 16.0 con OpenSSH y Python.
-  No instalar LAMP/Samba/FTP/PostgreSQL manualmente en la VM de destino.
-- Red de laboratorio confiable (preferir VMnet aislada); en bridge FTP sin TLS
-  expone contrasenas a la LAN y **no debe usarse** sin aislamiento.
-- Conservar una snapshot limpia de ASO-Destino. Los servicios se prueban alli;
-  nunca confundir controladora y destino.
+| Equipo | Función | Instalaciones iniciales |
+|---|---|---|
+| `OpenSUSE16` | Controladora, Ansible y repositorio Git | Python, Ansible Core, SSH, OpenSSL, psql cliente |
+| `ASO-Destino` | VM openSUSE Leap 16.0 limpia | SSH habilitado, Python, sudo y firewalld; sin instalaciones manuales de las tareas |
 
-## 2. Preparar acceso SSH en la controladora
+Tasks: **3:** Apache, PHP, phpMyAdmin, MariaDB, Samba y vsftpd; **4:** scripts/roles/templates reproducibles y sin secretos; **5:** PostgreSQL, biblioteca PHP, usuario/base y acceso remoto TLS con SCRAM. Se recomienda red virtual aislada para FTP sin cifrar. No expongas FTP en Bridge público o redes desconocidas.
+
+## 1. Clonar y preparar la controladora
 
 ```bash
+# Ejecutar en OpenSUSE16, NO en ASO-Destino.
 git clone https://github.com/manuel-lazarte/aso-first-practice.git
 cd aso-first-practice
+ansible --version
 ansible-galaxy collection install -r requirements.yml
-test -f ~/.ssh/id_ed25519 || ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
-ssh-copy-id ale@IP_ACTUAL_DESTINO
-ssh ale@IP_ACTUAL_DESTINO
 ```
 
-Copia `examples/hosts.example` a `hosts`, sustituye la IP. No pongas usuario
-ni contrasena en `hosts`; configura `~/.ssh/config`, fuera del repositorio:
+Para validar paquetes en Leap 16.0 si hay errores de instalación: `zypper search -s` para `postgresql`, `postgresql-server`, `python313-psycopg2`, `php8-pgsql`, `policycoreutils-python-utils`, `python3-firewall`. **No se confirmó la instalación de esos paquetes en ASO-Destino desde ChatGPT.**
+
+En ASO-Destino, abrir consola de VMware y comprobar `ip -br addr`, `systemctl is-active sshd`, `getenforce`. Guardar una snapshot limpia. No instalar servicios manualmente en el destino antes de Ansible.
+
+## 2. SSH e inventario portable
+
+En `OpenSUSE16`, obtener la IP actual de ASO-Destino de su consola, verificar huella SSH por canal confiable y configurar `~/.ssh/config` (privado):
 
 ```sshconfig
 Host aso-destino
@@ -38,170 +37,109 @@ Host aso-destino
   StrictHostKeyChecking yes
 ```
 
-El inventario se puede configurar como `[servidor]` seguido de
-`aso-destino` (alias SSH). Usa `ssh-keyscan` solamente para consultar huellas;
-verifica huella del servidor por un canal fiable antes de aceptarla. No
-deshabilites `host_key_checking` ni uses login directo como root.
+Si falta clave: `ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519` y `ssh-copy-id ale@IP_ACTUAL_DESTINO`. Luego `ssh aso-destino`. El archivo `hosts` del repositorio ya dice únicamente `[servidor]` y `aso-destino`; no lo sustituyas por el ejemplo con IP ficticia. Para cambiar de red (Bridge/Wi-Fi), actualiza **HostName en `~/.ssh/config`**, las listas CIDR privadas y el certificado si cambia la IP; **no** deshabilites comprobación de identidad SSH.
 
-## 3. Configuracion privada y Vault
+```bash
+ansible-inventory -i hosts --graph
+ansible servidor -m ping
+```
+
+## 3. Configuración privada, zona y Vault
 
 ```bash
 mkdir -p group_vars/all
 cp examples/lab.example.yml group_vars/all/lab.yml
+# EDITAR lab.yml: zone, listas IPv4 RFC1918 /24 a /32, DNS y IP reales.
+python3 scripts/validate-lab-cidrs.py 192.168.136.5/32
 ansible-vault create group_vars/all/vault.yml
 ```
 
-Edita `lab.yml` con la IP/CIDR **real** de la controladora (p.ej. /32) y
-`postgresql_server_name` correspondiente al certificado (DNS o IP).
-Para evitar que se olvide una red por defecto, `deploy.yml` exige
-`lab_client_cidrs` y `postgresql_client_cidrs` **no vacios**. No usar
-`0.0.0.0/0`; el firewall abrirá únicamente para esos clientes.
+El ejemplo utiliza `192.0.2.x` **solo como marcador** y fallará hasta reemplazarlo. `lab_firewall_zone` debe ser la zona real de la interfaz en `firewall-cmd --get-active-zones`. No uses 0.0.0.0/0, direcciones públicas, loopback o redes demasiado amplias. El rol **no elimina** reglas generales de terceros: si encuentra aperturas globales, aborta para que un administrador las audite; inspecciona políticas/rich rules además de `list-services`/`list-ports`.
 
-En `vault.yml` escribe valores reales para los nombres de
-`examples/vault.example.yml`. Para FTP, usar `openssl passwd -6` y pegar el
-hash resultante en `vault_ftp_password_hash` (nunca la contraseña en claro).
-El archivo Vault y los certificados estan excluidos por `.gitignore`.
+Crear en `group_vars/all/vault.yml` cifrado estas variables (valores propios, **nunca** en Git):
 
-Genera una CA y un certificado con SAN para la IP y nombre actual de la VM:
+```yaml
+vault_db_password: 'CLAVE_REAL_MARIADB'
+vault_samba_password: 'CLAVE_REAL_SAMBA'
+vault_ftp_password_hash: 'HASH_SHA512_CRYPT_DE_OPENSSL_PASSWD_6'
+vault_postgresql_admin_password: 'CLAVE_REAL_POSTGRES'
+vault_postgresql_app_password: 'CLAVE_REAL_ASO_USER'
+```
+
+Genera el hash con `openssl passwd -6` sin copiar claves reales a la consola/historial. El ejemplo `examples/vault.example.yml` incluye los nombres. `.gitignore` excluye Vault, `lab.yml`, `secrets/`, claves y certificados privados.
+
+## 4. CA, certificado y PostgreSQL TLS
+
+La IP y el DNS deben coincidir con `postgresql_server_ip` y `postgresql_server_name` de `lab.yml` y el SAN del certificado:
 
 ```bash
 bash scripts/generate-postgres-lab-certs.sh aso-destino.local IP_ACTUAL_DESTINO
-openssl verify -CAfile secrets/postgres/ca.crt secrets/postgres/server.crt
+bash scripts/validate-postgres-certs.sh \
+  secrets/postgres/ca.crt \
+  secrets/postgres/server.crt \
+  secrets/postgres/server.key \
+  aso-destino.local IP_ACTUAL_DESTINO
 ```
 
-Configura resolución del nombre `aso-destino.local` desde la controladora,
-por ejemplo con `/etc/hosts` local, o usa un DNS confiable del laboratorio.
-El nombre conectado al servidor debe coincidir con el SAN del certificado.
+El validador comprueba CA, vigencia mayor a siete días, SAN DNS/IP, correspondencia clave/certificado y permisos privados. No genera ni sobrescribe una clave ya existente. Si cambia DNS/IP, **archiva y reemplaza conscientemente** los certificados privados fuera del repo, ajusta DNS o `/etc/hosts` local y repite validación. `sslmode=verify-full` exige que el cliente resuelva `aso-destino.local` y confíe en `ca.crt`.
 
-## 4. Desplegar y verificar
+**PostgreSQL:** `roles/postgresql` conserva el clúster existente; usa el arranque empaquetado por openSUSE para inicializar cuando proceda, comprueba `PG_VERSION` y consulta rutas reales de PostgreSQL antes de modificar. Si falla el primer arranque, inspecciona `journalctl -u postgresql` y los paquetes, no ejecutes `initdb` sobre datos sin verificar. Configura HBA `hostssl`/`hostnossl`, usuario `aso_user` sin privilegios administrativos, base `aso_db`, y acceso limitado por CIDR. Verificación remota real es obligatoria.
 
-Desde el repositorio **en la controladora**, con sudo disponible en VM destino:
+## 5. Despliegue principal (solo OpenSUSE16)
 
 ```bash
-ansible servidor -m ping
-ansible-playbook deploy.yml --syntax-check --ask-vault-pass
-ansible-playbook deploy.yml --ask-vault-pass -K
+ansible-galaxy collection install -r requirements.yml
+ansible-inventory -i hosts --graph
+ansible-playbook -i hosts deploy.yml --syntax-check --ask-vault-pass
+ansible-playbook -i hosts deploy.yml --ask-vault-pass -K
 ```
 
-Si falla un servicio: `journalctl -u NOMBRE_SERVICIO -n 100 --no-pager`,
-`sudo ausearch -m avc -ts recent` y `sudo semanage fcontext -l` (sin desactivar
-SELinux). En el destino:
+La primera ejecución debe tener `failed=0` y `unreachable=0`. Cuando haya errores, corregir roles, no instalar manualmente en ASO-Destino. La segunda ejecución debe tener `changed=0` en recursos convergidos.
+
+## 6. Verificación en ASO-Destino
+
+El script es de **solo lectura** y debe ejecutarse con permisos root en el destino:
 
 ```bash
-systemctl is-enabled apache2 mariadb smb vsftpd postgresql
-systemctl is-active apache2 mariadb smb vsftpd postgresql
-getenforce
-sudo testparm -s
-sudo pdbedit -L -u usuario_samba
-id usuario_samba; id usuario_ftp
-ls -ldZ /srv/samba/compartido /srv/ftp/usuario_ftp/subidas
-sudo -u postgres psql -Atqc 'SELECT datname FROM pg_database;'
-sudo -u postgres psql -Atqc 'SHOW ssl;'
-php -m | grep -Ei 'pgsql|pdo_pgsql'
+# Desde la CONTROLADORA: transmite el script de verificación a ASO-Destino.
+ansible servidor -b -m script -a scripts/verify-deployment.sh
 ```
 
-Pruebas desde un cliente de la misma red privada:
+Comprueba servicios, cuentas, PostgreSQL/HBA, PHP por HTTP, firewall y SELinux. No sustituye la prueba de clientes remotos.
+
+## 7. Pruebas remotas desde un cliente autorizado
 
 ```bash
 curl -fsS http://IP_ACTUAL_DESTINO/
 curl -fsS http://IP_ACTUAL_DESTINO/prueba.php
+# Visitar http://IP_ACTUAL_DESTINO/phpMyAdmin/ y autenticar contra MariaDB.
 smbclient //IP_ACTUAL_DESTINO/compartido -U usuario_samba
+# Ejecutar desde smbclient: put archivo.txt; get archivo.txt; mkdir carpeta
 curl -u usuario_ftp -T archivo.txt ftp://IP_ACTUAL_DESTINO/subidas/
 curl -u usuario_ftp ftp://IP_ACTUAL_DESTINO/subidas/archivo.txt -o recibido.txt
+cmp archivo.txt recibido.txt
 bash scripts/check-postgres-tls.sh aso-destino.local
 ```
 
-El script de PostgreSQL requiere un `.pgpass` privado (0600) en el equipo
-cliente para `aso_user`. Debe mostrar una fila `ssl=t` y fallar el intento
-con `sslmode=disable`. `verify-full` verifica la CA y el SAN del servidor.
-`hostssl` y `SCRAM` son requisitos **distintos**: autenticación sola no cifra.
+Para PostgreSQL, configura `~/.pgpass` (permisos 0600) del **cliente** con la contraseña real; no la pongas en argumentos visibles. `check-postgres-tls.sh` exige que `verify-full` funcione y que `sslmode=disable` sea rechazado **por reglas HBA**, no simplemente por un error DNS o de contraseña. MariaDB debe aceptar a `simulacion_user` y su base; Samba debe permitir subidas/descargas y aplicar máscaras (`create mask=0660`, `directory mask=0770`; son límites máximos). FTP debe rechazar anónimo, no permitir escape de chroot ni shell SSH para `usuario_ftp`. Inspecciona zona, rich rules, políticas y etiquetas SELinux sin deshabilitarlos.
 
-Probar permisos de Samba creando archivos y directorios mediante cliente
-SMB, verificando `create mask = 0660` y `directory mask = 0770`. Verificar
-acceso a phpMyAdmin en `http://IP_ACTUAL_DESTINO/phpMyAdmin/` (la ruta
-exacta depende de la configuración empaquetada) e iniciar sesión.
+## 8. Reinicio, snapshot e idempotencia
 
-## 5. Reinicio, idempotencia, defensa
+En ASO-Destino ejecutar `sudo reboot`. Tras reconexión, volver a ejecutar el verificador. En OpenSUSE16, ejecutar `ansible-playbook -i hosts deploy.yml -K --ask-vault-pass` una segunda vez. Comprobar qué tareas reportan `changed`; investigar si repiten sin cambios reales. Restaurar snapshot limpia y repetir el proceso como lo haría el docente.
 
-- Ejecutar el playbook dos veces. La segunda ejecución no debe cambiar tareas
-  que ya están en el estado esperado (exceptuando comprobaciones justificadas).
-- Reiniciar SOLO la VM `ASO-Destino`, confirmar que los servicios vuelven.
-- Restaurar la snapshot limpia, repetir el procedimiento y grabar evidencia.
-- Mostrar comandos desde la controladora, `ansible servidor -m ping`, recap
-  sin `FAILED` ni `UNREACHABLE`, accesos y archivos transferidos.
+## 9. Fallos frecuentes
 
-## 6. Diagnóstico y seguridad
+- **SSH:** `Permission denied` → revisar llave/usuario/huella, nunca desactivar verificación. `UNREACHABLE` → IP actual, NAT/Bridge, sshd, firewall.
+- **Zypper/PackageKit:** esperar a que termine la transacción; no matar procesos de paquetes.
+- **Sudo:** usar `-K` y cuenta autorizada.
+- **MariaDB:** `journalctl -u mariadb`; socket real en `SHOW VARIABLES LIKE 'socket';`.
+- **Samba:** `testparm -s`, `pdbedit -L` y `pdbedit -Lv -u usuario_samba`; permisos/directorios/SELinux.
+- **FTP:** error de chroot → raíz propiedad root no escribible, `/etc/shells`, PAM, `ausearch -m avc -ts recent`.
+- **PostgreSQL:** `journalctl -u postgresql`, `SHOW ssl`, `SHOW hba_file`, `SELECT * FROM pg_hba_file_rules WHERE error IS NOT NULL`, SAN, permisos 0600 de key.
+- **Firewall:** `firewall-cmd --get-active-zones`, `--zone=ZONA --list-all` y `--permanent --list-all`, además de `--list-policies`. Revisar cambios preexistentes, no borrarlos indiscriminadamente.
 
-- `Permission denied (publickey)`: corregir `ssh-copy-id`, usuario o permiso
-  sobre la clave; no desactivar verificación SSH.
-- `UNREACHABLE`/`Connection refused`: IP actual, bridge/NAT, sshd y firewall.
-- Error sudo: ejecutar con `-K` o configurar privilegios controlados.
-- `zypper` bloqueado: esperar proceso PackageKit; no matar transacciones.
-- MariaDB: revisar `journalctl -u mariadb` y socket real de `mysql`.
-- FTP 500 OOPS: comprobar propiedad root del chroot, `getenforce` y AVCs.
-- Samba: validar `testparm`, usuario `pdbedit`, máscara y contexto SELinux.
-- PostgreSQL: `sudo -u postgres psql -c 'SHOW config_file;'`, `SHOW hba_file;`,
-  `SHOW ssl;`, `SELECT * FROM pg_hba_file_rules WHERE error IS NOT NULL;`;
-  verificar SAN, CA y permisos 0600 de `server.key`.
-- Sin `community.postgresql`: `ansible-galaxy collection install -r requirements.yml`.
+## 10. CI y guía de defensa
 
-**Atención:** FTP se mantiene sin TLS solo para laboratorios privados donde
-la práctica lo requiere; en red Bridge compartida utilizar aislamiento o
-configurar FTPS/SFTP. `firewalld` y SELinux **no** deben deshabilitarse.
-No publicar certificados privados, Vault ni credenciales.
+`.github/workflows/aso-static.yml` incluye comprobación YAML/Jinja/Bash, pruebas CIDR, `ansible-playbook --syntax-check` y ansible-lint en runner Ubuntu. **No prueba la instalación en openSUSE**. Si el workflow falla, revisar el log: no afirmar que CI pasó hasta verlo en GitHub. Ver `DEFENSA_ASO.md` y `AUDITORIA_FINAL.md` para guión, pendientes y matriz de cobertura.
 
-**Estado:** la revisión estática y los archivos no equivalen a haber probado
-el despliegue en la VM. Task 3, Task 4 y Task 5 solamente se aprueban con
-pruebas reales desde un snapshot limpio.
-
-## 7. Correcciones de validación final (rama fix/aso-final-validation)
-
-- El inventario `hosts` usa exclusivamente el alias `aso-destino`; cada persona
-  lo configura en `~/.ssh/config`. No se guardan IP de Manuel ni secretos.
-- Copia `examples/lab.example.yml` a `group_vars/all/lab.yml` y cambia
-  **antes** del despliegue la zona firewalld, las redes privadas (se exige
-  al menos /24 o /32) y el nombre DNS válido del certificado PostgreSQL.
-  Las redes reservadas de documentación se rechazan intencionalmente.
-- `roles/firewall` elimina autorizaciones generales previas para HTTP, Samba,
-  FTP y PostgreSQL **en la zona elegida** y crea reglas por origen. Comprueba
-  `firewall-cmd --get-active-zones` y `firewall-cmd --zone=ZONA --list-all`;
-  otras zonas y políticas externas requieren auditoría manual.
-- FTP usa `/usr/sbin/nologin` para evitar acceso shell interactivo e incluye
-  dicho shell en `/etc/shells` para compatibilidad con `pam_shells`. La prueba
-  de autenticación FTP y rechazo de acceso SSH es obligatoria.
-- SELinux configura `public_content_t` / `public_content_rw_t` y el booleano
-  limitado `ftpd_anon_write`, **solo si realmente existe**. Aunque incluya
-  'anon' en el nombre, autoriza escritura sobre ese tipo SELinux; no habilita
-  usuarios FTP anónimos (`anonymous_enable=NO`). Si la política no lo tiene,
-  Ansible falla explícitamente para que se evalúe una política específica.
-- PostgreSQL usa `community.postgresql.postgresql_alter_system` y detecta
-  `data_directory`/`hba_file` en el servidor. La unidad empaquetada de openSUSE
-  inicializa el primer cluster al arrancar; si falla, revisar `journalctl`
-  antes de intentar `initdb` manualmente, nunca reinicializar datos existentes.
-  La prueba PDO usa TLS. El test HTTP temporal verifica las extensiones bajo
-  Apache y elimina el archivo de diagnóstico incluso cuando falla.
-- Para verificar **que no hay reglas globales** examina tanto servicios/puertos
-  directos como `rich rules`: `sudo firewall-cmd --zone=ZONA --list-all`.
-- Se mantiene la protección de llaves SSH, Ansible Vault y material TLS. No
-  publicar certificados privados ni archivos `group_vars/all/lab.yml`.
-
-### Preparación de defensas y pruebas estáticas
-
-Desde la controladora openSUSE16, dentro del repo, una vez ajustados los
-archivos privados:
-
-```bash
-ansible-galaxy collection install -r requirements.yml
-ansible-galaxy collection list
-ansible-inventory -i hosts --graph
-ansible-playbook -i hosts deploy.yml --syntax-check --ask-vault-pass
-ansible-lint deploy.yml  # solo si ansible-lint esta instalado
-ansible servidor -m ping
-ansible-playbook deploy.yml -K --ask-vault-pass
-ansible-playbook deploy.yml -K --ask-vault-pass
-```
-
-Estas pruebas aun **no se han ejecutado contra ASO-Destino** desde ChatGPT.
-Antes de la defensa comprueba con `zypper se -s` la disponibilidad real de
-`postgresql-server`, `python313-psycopg2`, `php8-pgsql` y
-`policycoreutils-python-utils` en los repositorios configurados de Leap 16.
+**Estado honesto:** se preparó el código y se realizaron pruebas locales de formatos, CIDR y certificados. Sin acceso SSH real a las VMs, todavía no se ha probado el despliegue, SELinux, transferencia de archivos, TLS remoto, reinicio ni idempotencia de los servicios de openSUSE Leap 16.0.

@@ -1,32 +1,31 @@
 ---
 - name: Instalar PHP y mod_php8 para Apache
   ansible.builtin.zypper:
-    name:
-      - php8
-      - apache2-mod_php8
-      - php8-mysql
+    name: [php8, apache2-mod_php8, php8-mysql]
     state: present
   notify: Reiniciar Apache
 
-- name: Consultar modulos habilitados en Apache
+- name: Consultar módulos habilitados en Apache
   ansible.builtin.command:
-    cmd: a2enmod -l
+    argv: [a2enmod, -l]
   register: apache_modules
   changed_when: false
 
-- name: Habilitar modulo PHP8 solo si falta
+- name: Habilitar módulo PHP8 solamente si falta
   ansible.builtin.command:
-    cmd: a2enmod php8
+    argv: [a2enmod, php8]
   when: "'php8' not in apache_modules.stdout.split()"
   notify: Reiniciar Apache
 
-- name: Publicar prueba PHP sin secretos
+- name: Publicar página idempotente de prueba PHP sin secretos
   ansible.builtin.copy:
     dest: /srv/www/htdocs/prueba.php
-    content: |
-      <?php
-      header('Content-Type: text/plain; charset=UTF-8');
-      echo "PHP_OK " . PHP_VERSION . "\n";
     owner: root
     group: root
     mode: '0644'
+    content: |
+      <?php
+      header('Content-Type: text/plain; charset=UTF-8');
+      echo "PHP_OK\n";
+      echo (extension_loaded('pgsql') && extension_loaded('pdo_pgsql'))
+          ? "PDO_PGSQL_OK\n" : "PDO_PGSQL_MISSING\n";

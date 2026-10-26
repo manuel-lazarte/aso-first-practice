@@ -8,7 +8,7 @@ Python y PHP PostgreSQL, activa TLS y añade reglas HBA por usuario y base.
 Antes de ejecutar: `group_vars/all/vault.yml` cifrado con
 `vault_postgresql_admin_password` y `vault_postgresql_app_password`, y
 `group_vars/all/lab.yml` con `postgresql_client_cidrs` reales y
-`postgresql_server_name`. Generar la CA y el certificado SAN con
+`postgresql_server_name` y `postgresql_server_ip`. Generar la CA y el certificado SAN con
 `scripts/generate-postgres-lab-certs.sh` desde la controladora. Los archivos
 `secrets/postgres/*.key` deben permanecer excluidos del control de versiones.
 
@@ -41,3 +41,14 @@ Para verificar cortafuegos revisar `firewall-cmd --list-all` en la zona activa.
 
 **Pendiente:** comprobar con `zypper se -s` nombres de paquetes efectivos,
 probar sobre la VM limpia, reiniciar y ejecutar dos veces (idempotencia).
+
+## Validación predespliegue del certificado
+
+Se llama `scripts/validate-postgres-certs.sh` ANTES de alterar PostgreSQL.
+Valida vigencia, CA, SAN DNS/IP y correspondencia de clave pública/privada.
+Rechaza llaves con permisos grupales o públicos. Ante cambio de IP/DNS,
+regenerar certificados conscientemente (archivar los anteriores fuera del repo).
+Una ejecución sin un certificado correcto se detiene antes de instalarlo.
+
+La página `prueba.php` declarativa verifica PHP en Apache y las extensiones
+`pgsql`/`pdo_pgsql` sin crear/borrar archivos temporales en cada ejecución.
