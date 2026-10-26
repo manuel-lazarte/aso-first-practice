@@ -1,0 +1,28 @@
+---
+# Prepara las reglas sin cortar el acceso SSH del controlador.
+- name: Instalar firewalld y bindings Python
+  ansible.builtin.zypper:
+    name:
+      - firewalld
+      - python3-firewall
+    state: present
+
+- name: Autorizar SSH antes de activar el firewall
+  ansible.posix.firewalld:
+    service: ssh
+    permanent: true
+    offline: true
+    state: enabled
+
+- name: Habilitar e iniciar firewalld
+  ansible.builtin.systemd:
+    name: firewalld
+    enabled: true
+    state: started
+
+- name: Permitir HTTP para Apache y phpMyAdmin
+  ansible.posix.firewalld:
+    service: http
+    permanent: true
+    immediate: true
+    state: enabled

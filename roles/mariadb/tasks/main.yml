@@ -1,6 +1,5 @@
 ---
-# TASK 3 - MariaDB en openSUSE 16.0
-
+# Sustituye SQL manual por modulos declarativos e idempotentes.
 - name: Instalar MariaDB y dependencias
   ansible.builtin.zypper:
     name:
@@ -15,12 +14,23 @@
     enabled: true
     state: started
 
-- name: Verificar servicio MariaDB
+- name: Verificar que MariaDB responde
   ansible.builtin.command:
     cmd: mariadb-admin ping
   changed_when: false
 
-- name: Crear usuario y permisos MariaDB
+- name: Crear la base de datos simulacion_db
+  community.mysql.mysql_db:
+    name: simulacion_db
+    state: present
+    encoding: utf8mb4
+    login_user: mysql
+    login_unix_socket: /run/mysql/mysql.sock
+    config_file: ''
+  become: true
+  become_user: mysql
+
+- name: Crear usuario y otorgar permisos en simulacion_db
   community.mysql.mysql_user:
     name: simulacion_user
     host: localhost
@@ -34,47 +44,7 @@
   become_user: mysql
   no_log: true
 
-- name: Crear o actualizar usuario y permisos MariaDB
-  ansible.builtin.command:
-    argv:
-      - mariadb
-      - --no-defaults
-      - --protocol=socket
-      - -u
-      - mysql
-    stdin: |
-      CREATE USER IF NOT EXISTS
-      'simulacion_user'@'localhost'
-      IDENTIFIED BY '{{ vault_db_password | replace('\\', '\\\\') | replace("'", "''") }}';
-
-      ALTER USER 'simulacion_user'@'localhost'
-      IDENTIFIED BY '{{ vault_db_password | replace('\\', '\\\\') | replace("'", "''") }}';
-
-      GRANT ALL PRIVILEGES ON simulacion_db.*
-      TO 'simulacion_user'@'localhost';
-  become: true
-  become_user: mysql
-  no_log: true
-  register: resultado_mariadb
-  failed_when: false
-
-- name: Diagnosticar resultado MariaDB
-  ansible.builtin.debug:
-    msg:
-      - "Codigo de retorno: {{ resultado_mariadb.rc | default('desconocido') }}"
-      - "Error 1064: {{ '1064' in (resultado_mariadb.stderr | default('')) }}"
-      - "Error 1045: {{ '1045' in (resultado_mariadb.stderr | default('')) }}"
-      - "Error 1396: {{ '1396' in (resultado_mariadb.stderr | default('')) }}"
-      - "Error 1142: {{ '1142' in (resultado_mariadb.stderr | default('')) }}"
-      - "Error de sintaxis: {{ 'syntax' in (resultado_mariadb.stderr | default('') | lower) }}"
-  when: resultado_mariadb.rc | default(1) != 0
-
-- name: Detener si falla configuracion MariaDB
-  ansible.builtin.assert:
-    that:
-      - resultado_mariadb.rc == 0
-    fail_msg: "La configuracion automatica de MariaDB fallo."
-- name: Verificar permisos del usuario
+- name: Verificar permisos del usuario MariaDB
   ansible.builtin.command:
     argv:
       - mariadb
@@ -87,7 +57,3 @@
   become: true
   become_user: mysql
   changed_when: false
-
-- name: Confirmar configuracion MariaDB
-  ansible.builtin.debug:
-    msg: "MariaDB, simulacion_db y simulacion_user configurados."

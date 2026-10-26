@@ -1,10 +1,12 @@
 ---
-- name: Desplegar LAMP y Samba en openSUSE
+- name: Desplegar LAMP, Samba y FTP en openSUSE 16.0
   hosts: servidor
   become: true
-
   roles:
+    - firewall
     - apache
     - php
     - mariadb
     - phpmyadmin
+    - samba
+    - ftp

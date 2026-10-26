@@ -1,0 +1,76 @@
+---
+- name: Instalar vsftpd
+  ansible.builtin.zypper:
+    name: vsftpd
+    state: present
+
+- name: Crear grupo de servicio FTP
+  ansible.builtin.group:
+    name: "{{ ftp_user_name }}"
+    state: present
+
+- name: Crear usuario FTP con hash de contrasena almacenado en Vault
+  ansible.builtin.user:
+    name: "{{ ftp_user_name }}"
+    group: "{{ ftp_user_name }}"
+    home: "{{ ftp_root }}"
+    create_home: false
+    shell: /bin/bash
+    password: "{{ vault_ftp_password_hash }}"
+    state: present
+  no_log: true
+
+- name: Crear raiz FTP propiedad de root para chroot seguro
+  ansible.builtin.file:
+    path: "{{ ftp_root }}"
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: Crear directorio escribible para transferencias
+  ansible.builtin.file:
+    path: "{{ ftp_root }}/subidas"
+    state: directory
+    owner: "{{ ftp_user_name }}"
+    group: "{{ ftp_user_name }}"
+    mode: '0750'
+
+- name: Restringir las cuentas que pueden iniciar sesion FTP
+  ansible.builtin.copy:
+    dest: /etc/vsftpd.user_list
+    content: "{{ ftp_user_name }}\n"
+    owner: root
+    group: root
+    mode: '0600'
+  notify: Reiniciar vsftpd
+
+- name: Instalar template vsftpd.conf
+  ansible.builtin.template:
+    src: vsftpd.conf.j2
+    dest: /etc/vsftpd.conf
+    owner: root
+    group: root
+    mode: '0600'
+    backup: true
+  notify: Reiniciar vsftpd
+
+- name: Habilitar e iniciar vsftpd
+  ansible.builtin.systemd:
+    name: vsftpd
+    enabled: true
+    state: started
+
+- name: Permitir FTP por el firewall
+  ansible.posix.firewalld:
+    service: ftp
+    permanent: true
+    immediate: true
+    state: enabled
+
+- name: Permitir puertos de FTP pasivo
+  ansible.posix.firewalld:
+    port: "{{ ftp_passive_min_port }}-{{ ftp_passive_max_port }}/tcp"
+    permanent: true
+    immediate: true
+    state: enabled

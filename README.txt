@@ -1,84 +1,91 @@
-# ANSIBLE + GITHUB — DEPLOY LAMP AND SAMBA
+# ASO - Task 3 y Task 4: LAMP, Samba y FTP con Ansible
 
-**Repository:** https://github.com/manuel-lazarte/aso-first-practice
+Repositorio: https://github.com/manuel-lazarte/aso-first-practice
+Sistema destino: openSUSE Leap 16.0 por SSH (VM remota).
 
-## 1. Project Description
+## Requisitos
+- Controlador con Ansible y VM destino openSUSE Leap 16.0.
+- Acceso SSH por clave y privilegios sudo en la VM destino.
+- Python 3 y repositorios de zypper disponibles en la VM.
+- Colecciones Ansible de requirements.yml instaladas en el controlador.
 
-This project uses Ansible to automate the installation and configuration of services on an openSUSE 16.0 server through SSH.
+## Archivos y roles
+- deploy.yml: instala/configura firewall, Apache, PHP, MariaDB, phpMyAdmin,
+  Samba y FTP en una ejecucion.
+- playbook_ftp.yml: despliegue separado de FTP sin actualizar todo el SO.
+- probar_samba.yml: despliegue separado de Samba.
+- roles/apache/: pagina HTML de prueba y servicio Apache.
+- roles/php/: modulo PHP para Apache y /prueba.php.
+- roles/mariadb/: BD simulacion_db y usuario simulacion_user.
+- roles/phpmyadmin/: instalacion y configuracion empaquetada para Apache.
+- roles/samba/: usuario del sistema, usuario SMB, carpeta compartida y
+  roles/samba/templates/smb.conf.j2 (create mask 0660; directory mask 0770).
+- roles/ftp/: usuario usuario_ftp, carpeta subidas y vsftpd.conf.j2.
+- roles/firewall/: firewalld y servicios SSH/HTTP. Roles Samba/FTP abren sus puertos.
+- examples/vault.example.yml: marcadores de variables (sin contrasenas).
 
-The project includes Apache, PHP, MariaDB, phpMyAdmin, Samba and previously developed playbooks for FTP.
+## Preparacion del controlador
+1. Clonar el repositorio y entrar a la carpeta.
+2. Instalar las colecciones en el controlador:
+   ansible-galaxy collection install -r requirements.yml
+3. Ajustar hosts con la IP destino. No publicar nombre de usuario o claves.
+   Usar ssh-agent o ~/.ssh/config para configurar el acceso remoto por clave.
+   Por ejemplo en ~/.ssh/config del controlador:
+     Host 192.168.1.114
+       User TU_USUARIO_SSH
+       IdentityFile ~/.ssh/id_ed25519
+4. Generar hash de contrasena para usuario_ftp EN EL CONTROLADOR:
+   openssl passwd -6
+   Introducir la clave cuando el comando la solicite y copiar el hash.
+5. Preparar variables cifradas:
+   mkdir -p group_vars/all
+   ansible-vault create group_vars/all/vault.yml
+   Escribir estas variables, con valores privados propios:
+     vault_db_password: "CLAVE_MARIADB"
+     vault_samba_password: "CLAVE_SAMBA"
+     vault_ftp_password_hash: "HASH_GENERADO_CON_OPENSSL"
+   Usar contrasenas distintas. group_vars/all/vault.yml NO debe versionarse.
 
-## 2. Requirements
+## Despliegue remoto y repetibilidad
+  ansible servidor -m ping --ask-vault-pass
+  ansible-playbook deploy.yml --syntax-check --ask-vault-pass
+  ansible-playbook deploy.yml -K --ask-vault-pass
+  ansible-playbook deploy.yml -K --ask-vault-pass
 
-- Two virtual machines: Ansible Master and Ansible Destination.
-- Operating system: openSUSE 16.0.
-- Ansible installed on the controller.
-- SSH connectivity between both machines.
-- Python 3 and the required Ansible collections.
-- Administrator privileges on the destination server.
+La segunda ejecucion debe ser idempotente (sin cambios innecesarios).
+No declarar la tarea terminada si queda algun host FAILED o UNREACHABLE.
 
-## 3. Project Structure
+## Verificacion en la VM destino
+  sudo systemctl is-active apache2 mariadb smb vsftpd firewalld
+  sudo testparm -s
+  id usuario_samba
+  sudo pdbedit -L -u usuario_samba
+  ls -ld /srv/samba/compartido /srv/ftp/usuario_ftp /srv/ftp/usuario_ftp/subidas
+  sudo mariadb -e "SHOW DATABASES;"
+  sudo mariadb -e "SHOW GRANTS FOR 'simulacion_user'@'localhost';"
 
-- `hosts`: Ansible inventory.
-- `ansible.cfg`: Ansible configuration.
-- `deploy.yml`: Main deployment playbook.
-- `roles/apache/`: Apache installation and configuration.
-- `roles/php/`: PHP installation and configuration.
-- `roles/mariadb/`: MariaDB installation and database configuration.
-- `roles/phpmyadmin/`: phpMyAdmin installation.
-- `roles/samba/`: Samba installation and shared resource configuration.
-- `playbook_ftp.yml`: Previous FTP deployment exercise.
+En otra maquina de la red de laboratorio:
+- Apache: http://IP_DESTINO/
+- PHP: http://IP_DESTINO/prueba.php
+- phpMyAdmin: http://IP_DESTINO/phpMyAdmin/
+- Samba: smbclient //IP_DESTINO/compartido -U usuario_samba
+  Probar la subida/descarga y verificar create mask 0660 y directory mask 0770.
+- FTP: curl -u usuario_ftp ftp://IP_DESTINO/
+  Para subir: curl -u usuario_ftp -T archivo.txt ftp://IP_DESTINO/subidas/
+  curl solicita la contrasena si no se especifica en la URL.
 
-## 4. Steps to Run the Project
+## Seguridad y limitaciones
+- El inventario hosts no incluye usuarios ni contrasenas visibles.
+- Conservar group_vars/all/vault.yml cifrado, ignorado por .gitignore.
+- FTP aqui es SIN TLS, SOLO para laboratorio en red privada aislada: las
+  contrasenas se transmiten en claro. Para uso real utilizar SFTP o FTPS.
+- El usuario FTP usa una contrasena Linux hasheada (no guardar hash publico).
+- La regla SSH se agrega antes de activar firewalld para conservar acceso.
+- Este repositorio no demuestra por si mismo que el deploy haya funcionado:
+  realizar las pruebas reales en openSUSE 16.0 con las VMs.
+- Si existe SELinux activo y bloquea FTP/Samba, revisar AVCs y contextos;
+  no desactivar la seguridad como solucion permanente.
 
-1. Clone the GitHub repository:
-
-   `git clone https://github.com/manuel-lazarte/aso-first-practice.git`
-
-2. Enter the project directory:
-
-   `cd aso-first-practice`
-
-3. Check the destination IP address and SSH user in the `hosts` inventory file.
-
-4. Install the required Ansible collections:
-
-   `ansible-galaxy collection install community.mysql`
-
-5. Configure the encrypted variables in `group_vars/all/vault.yml` using Ansible Vault. This file is excluded from the public repository.
-
-6. Verify connectivity:
-
-   `ansible servidor -m ping --ask-vault-pass`
-
-7. Check the deployment syntax:
-
-   `ansible-playbook deploy.yml --syntax-check --ask-vault-pass`
-
-8. Execute the deployment:
-
-   `ansible-playbook deploy.yml -K --ask-vault-pass`
-
-## 5. Verification
-
-The following services were tested successfully in the laboratory:
-
-- Apache: `http://192.168.1.114/`
-- PHP: `http://192.168.1.114/prueba.php`
-- phpMyAdmin: `http://192.168.1.114/phpMyAdmin/`
-- MariaDB: Database `simulacion_db`.
-- Samba: Shared directory configured on the destination server.
-
-The IP address corresponds to the laboratory environment and may change in another network.
-
-## 6. Known Limitations
-
-The automatic MariaDB user configuration task still reports an error during the full playbook execution. The database, user permissions and phpMyAdmin access were verified separately.
-
-A fully successful execution of `deploy.yml` on a clean destination machine has not yet been confirmed.
-
-## 7. GitHub
-
-The project includes Ansible scripts, roles and configuration templates.
-
-Repository: https://github.com/manuel-lazarte/aso-first-practice
+## Task 4: GitHub
+Los playbooks, roles, plantillas smb.conf.j2 y vsftpd.conf.j2 se versionan.
+No incluir credenciales reales ni group_vars/all/vault.yml en ningun commit.

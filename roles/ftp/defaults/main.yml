@@ -1,0 +1,5 @@
+---
+ftp_user_name: usuario_ftp
+ftp_root: "/srv/ftp/{{ ftp_user_name }}"
+ftp_passive_min_port: 30000
+ftp_passive_max_port: 30010

@@ -1,7 +1,7 @@
 ---
-- name: Preparar Samba en openSUSE
+- name: Preparar Samba en openSUSE 16.0
   hosts: servidor
   become: true
-
   roles:
+    - firewall
     - samba

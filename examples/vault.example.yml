@@ -1,0 +1,7 @@
+---
+# SOLO NOMBRES Y MARCADORES. NO PUBLICAR CREDENCIALES REALES.
+# Copia estas variables a group_vars/all/vault.yml CIFRADO con Ansible Vault.
+vault_db_password: "REEMPLAZAR_CLAVE_MARIADB"
+vault_samba_password: "REEMPLAZAR_CLAVE_SAMBA"
+# Generar hash de la clave elegida con openssl passwd -6 en el controlador.
+vault_ftp_password_hash: "REEMPLAZAR_CON_HASH_SHA512_CRYPT"
