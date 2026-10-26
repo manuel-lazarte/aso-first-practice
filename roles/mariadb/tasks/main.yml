@@ -1,6 +1,5 @@
 ---
-# Sustituye SQL manual por modulos declarativos e idempotentes.
-- name: Instalar MariaDB y dependencias
+- name: Instalar MariaDB y PyMySQL
   ansible.builtin.zypper:
     name:
       - mariadb
@@ -14,12 +13,7 @@
     enabled: true
     state: started
 
-- name: Verificar que MariaDB responde
-  ansible.builtin.command:
-    cmd: mariadb-admin ping
-  changed_when: false
-
-- name: Crear la base de datos simulacion_db
+- name: Crear la base simulacion_db
   community.mysql.mysql_db:
     name: simulacion_db
     state: present
@@ -27,33 +21,32 @@
     login_user: mysql
     login_unix_socket: /run/mysql/mysql.sock
     config_file: ''
-  become: true
   become_user: mysql
 
-- name: Crear usuario y otorgar permisos en simulacion_db
+- name: Crear usuario restringido a simulacion_db
   community.mysql.mysql_user:
     name: simulacion_user
     host: localhost
     password: "{{ vault_db_password }}"
-    priv: "simulacion_db.*:ALL"
+    priv: 'simulacion_db.*:ALL'
     state: present
     login_user: mysql
     login_unix_socket: /run/mysql/mysql.sock
     config_file: ''
-  become: true
   become_user: mysql
   no_log: true
 
-- name: Verificar permisos del usuario MariaDB
+- name: Verificar autentificacion real del usuario creado
   ansible.builtin.command:
     argv:
       - mariadb
       - --no-defaults
-      - --protocol=socket
-      - -u
-      - mysql
-      - -e
-      - "SHOW GRANTS FOR 'simulacion_user'@'localhost';"
-  become: true
-  become_user: mysql
+      - --host=localhost
+      - --protocol=TCP
+      - --user=simulacion_user
+      - --database=simulacion_db
+      - --execute=SELECT CURRENT_USER(),DATABASE();
+  environment:
+    MYSQL_PWD: "{{ vault_db_password }}"
   changed_when: false
+  no_log: true

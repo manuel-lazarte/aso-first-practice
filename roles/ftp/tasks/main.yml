@@ -1,15 +1,17 @@
 ---
-- name: Instalar vsftpd
+- name: Instalar vsftpd y herramientas de SELinux
   ansible.builtin.zypper:
-    name: vsftpd
+    name:
+      - vsftpd
+      - policycoreutils-python-utils
     state: present
 
-- name: Crear grupo de servicio FTP
+- name: Crear grupo del usuario FTP
   ansible.builtin.group:
     name: "{{ ftp_user_name }}"
     state: present
 
-- name: Crear usuario FTP con hash de contrasena almacenado en Vault
+- name: Crear usuario FTP limitado por lista blanca
   ansible.builtin.user:
     name: "{{ ftp_user_name }}"
     group: "{{ ftp_user_name }}"
@@ -20,7 +22,7 @@
     state: present
   no_log: true
 
-- name: Crear raiz FTP propiedad de root para chroot seguro
+- name: Raiz FTP no escribible para chroot
   ansible.builtin.file:
     path: "{{ ftp_root }}"
     state: directory
@@ -28,7 +30,7 @@
     group: root
     mode: '0755'
 
-- name: Crear directorio escribible para transferencias
+- name: Crear directorio para subidas
   ansible.builtin.file:
     path: "{{ ftp_root }}/subidas"
     state: directory
@@ -36,7 +38,34 @@
     group: "{{ ftp_user_name }}"
     mode: '0750'
 
-- name: Restringir las cuentas que pueden iniciar sesion FTP
+- name: Etiquetar raiz FTP para SELinux
+  community.general.sefcontext:
+    target: "{{ ftp_root }}/?"
+    setype: public_content_t
+    state: present
+  register: ftp_root_context
+  when: ansible_facts.selinux is defined and ansible_facts.selinux.status == 'enabled'
+
+- name: Etiquetar area de escritura FTP
+  community.general.sefcontext:
+    target: "{{ ftp_root }}/subidas(/.*)?"
+    setype: public_content_rw_t
+    state: present
+  register: ftp_upload_context
+  when: ansible_facts.selinux is defined and ansible_facts.selinux.status == 'enabled'
+
+- name: Permitir escritura FTP sobre public_content_rw_t bajo SELinux
+  community.general.seboolean:
+    name: ftpd_anon_write
+    state: true
+    persistent: true
+  when: ansible_facts.selinux is defined and ansible_facts.selinux.status == 'enabled'
+
+- name: Aplicar contextos FTP al crearse reglas
+  ansible.builtin.command: "restorecon -RF {{ ftp_root }}"
+  when: ftp_root_context is changed or ftp_upload_context is changed
+
+- name: Publicar usuario permitido
   ansible.builtin.copy:
     dest: /etc/vsftpd.user_list
     content: "{{ ftp_user_name }}\n"
@@ -45,7 +74,7 @@
     mode: '0600'
   notify: Reiniciar vsftpd
 
-- name: Instalar template vsftpd.conf
+- name: Publicar template FTP
   ansible.builtin.template:
     src: vsftpd.conf.j2
     dest: /etc/vsftpd.conf
@@ -61,16 +90,20 @@
     enabled: true
     state: started
 
-- name: Permitir FTP por el firewall
+- name: Abrir puerto FTP de control solo desde la red privada
   ansible.posix.firewalld:
-    service: ftp
+    zone: "{{ lab_firewall_zone | default('public') }}"
+    rich_rule: 'rule family="ipv4" source address="{{ item }}" service name="ftp" accept'
     permanent: true
     immediate: true
     state: enabled
+  loop: "{{ lab_client_cidrs }}"
 
-- name: Permitir puertos de FTP pasivo
+- name: Abrir puertos de FTP pasivo solo desde la red privada
   ansible.posix.firewalld:
-    port: "{{ ftp_passive_min_port }}-{{ ftp_passive_max_port }}/tcp"
+    zone: "{{ lab_firewall_zone | default('public') }}"
+    rich_rule: 'rule family="ipv4" source address="{{ item }}" port port="{{ ftp_passive_min_port }}-{{ ftp_passive_max_port }}" protocol="tcp" accept'
     permanent: true
     immediate: true
     state: enabled
+  loop: "{{ lab_client_cidrs }}"

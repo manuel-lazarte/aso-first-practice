@@ -1,0 +1,12 @@
+---
+postgresql_db_name: aso_db
+postgresql_app_user: aso_user
+postgresql_port: 5432
+postgresql_service: postgresql
+postgresql_listen_addresses: '*'
+# HBA y firewall no habilitan acceso remoto si esta lista queda vacia.
+postgresql_client_cidrs: []
+postgresql_tls_dir: /var/lib/pgsql/aso-tls
+postgresql_tls_cert_src: "{{ playbook_dir }}/secrets/postgres/server.crt"
+postgresql_tls_key_src: "{{ playbook_dir }}/secrets/postgres/server.key"
+postgresql_tls_ca_src: "{{ playbook_dir }}/secrets/postgres/ca.crt"

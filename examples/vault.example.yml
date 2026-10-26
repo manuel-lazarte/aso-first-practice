@@ -1,7 +1,7 @@
 ---
-# SOLO NOMBRES Y MARCADORES. NO PUBLICAR CREDENCIALES REALES.
-# Copia estas variables a group_vars/all/vault.yml CIFRADO con Ansible Vault.
-vault_db_password: "REEMPLAZAR_CLAVE_MARIADB"
-vault_samba_password: "REEMPLAZAR_CLAVE_SAMBA"
-# Generar hash de la clave elegida con openssl passwd -6 en el controlador.
-vault_ftp_password_hash: "REEMPLAZAR_CON_HASH_SHA512_CRYPT"
+# COPIAR NOMBRES a group_vars/all/vault.yml y cifrar con ansible-vault.
+vault_db_password: 'SUSTITUIR_MARIADB'
+vault_samba_password: 'SUSTITUIR_SAMBA'
+vault_ftp_password_hash: 'HASH_QUE_GENERA_OPENSSL_PASSWD_6'
+vault_postgresql_admin_password: 'SUSTITUIR_ADMIN_POSTGRES'
+vault_postgresql_app_password: 'SUSTITUIR_ASO_USER'

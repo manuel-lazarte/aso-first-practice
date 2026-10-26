@@ -1,5 +1,4 @@
 ---
-# Prepara las reglas sin cortar el acceso SSH del controlador.
 - name: Instalar firewalld y bindings Python
   ansible.builtin.zypper:
     name:
@@ -7,9 +6,11 @@
       - python3-firewall
     state: present
 
-- name: Autorizar SSH antes de activar el firewall
+# La VM de destino exige SSH autorizado antes de la primera ejecucion.
+- name: Conservar acceso SSH en la zona publica antes del arranque
   ansible.posix.firewalld:
     service: ssh
+    zone: public
     permanent: true
     offline: true
     state: enabled
@@ -20,9 +21,11 @@
     enabled: true
     state: started
 
-- name: Permitir HTTP para Apache y phpMyAdmin
+- name: Autorizar HTTP solo desde CIDR del laboratorio
   ansible.posix.firewalld:
-    service: http
+    zone: "{{ lab_firewall_zone | default('public') }}"
+    rich_rule: 'rule family="ipv4" source address="{{ item }}" service name="http" accept'
     permanent: true
     immediate: true
     state: enabled
+  loop: "{{ lab_client_cidrs }}"

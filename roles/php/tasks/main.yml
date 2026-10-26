@@ -1,5 +1,5 @@
 ---
-- name: Instalar PHP y modulo para Apache
+- name: Instalar PHP y mod_php8 para Apache
   ansible.builtin.zypper:
     name:
       - php8
@@ -8,19 +8,25 @@
     state: present
   notify: Reiniciar Apache
 
-- name: Verificar que el modulo PHP esta habilitado
+- name: Consultar modulos habilitados en Apache
+  ansible.builtin.command:
+    cmd: a2enmod -l
+  register: apache_modules
+  changed_when: false
+
+- name: Habilitar modulo PHP8 solo si falta
   ansible.builtin.command:
     cmd: a2enmod php8
-  register: php_module
-  changed_when: "'already' not in php_module.stdout | lower"
+  when: "'php8' not in apache_modules.stdout.split()"
   notify: Reiniciar Apache
 
-- name: Crear pagina de prueba PHP
+- name: Publicar prueba PHP sin secretos
   ansible.builtin.copy:
     dest: /srv/www/htdocs/prueba.php
     content: |
       <?php
-      echo "<h1>PHP funcionando con Ansible</h1>";
-      echo "<p>Version: " . PHP_VERSION . "</p>";
-      ?>
+      header('Content-Type: text/plain; charset=UTF-8');
+      echo "PHP_OK " . PHP_VERSION . "\n";
+    owner: root
+    group: root
     mode: '0644'

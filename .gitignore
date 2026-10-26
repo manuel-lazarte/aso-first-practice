@@ -1,24 +1,21 @@
-# Credenciales y archivos privados
+# Credenciales privadas y configuracion propia de cada laboratorio
 group_vars/all/vault.yml
+group_vars/all/lab.yml
+secrets/
 *.pem
 *.key
+*.p12
+*.pfx
 *.retry
-
-# Copias de seguridad
+# Copias y archivos temporales
 *.bak
 *.backup
 *~
-
-# Archivos temporales
 *.log
 *.tmp
 __pycache__/
 *.pyc
-
-# Pruebas de diagnostico
 prueba_sql.yml
 prueba_usuario_db.yml
-
 /ans_aso/
-
 team_list.txt

@@ -1,17 +1,18 @@
 ---
-- name: Instalar Samba
+- name: Instalar Samba y herramientas SELinux
   ansible.builtin.zypper:
     name:
       - samba
       - samba-client
+      - policycoreutils-python-utils
     state: present
 
-- name: Crear grupo para compartir archivos
+- name: Crear grupo samba
   ansible.builtin.group:
     name: sambashare
     state: present
 
-- name: Crear usuario del sistema para Samba
+- name: Crear usuario Linux sin login interactivo
   ansible.builtin.user:
     name: usuario_samba
     group: sambashare
@@ -19,67 +20,77 @@
     create_home: false
     state: present
 
-- name: Crear directorio compartido
+- name: Crear recurso compartido
   ansible.builtin.file:
     path: /srv/samba/compartido
     state: directory
     owner: root
     group: sambashare
     mode: '2770'
-- name: Configurar recurso compartido Samba
+
+- name: Detectar SELinux habilitado
+  ansible.builtin.command: getenforce
+  register: samba_selinux
+  changed_when: false
+  when: ansible_facts.selinux is defined and ansible_facts.selinux.status == 'enabled'
+
+- name: Registrar contexto persistente Samba
+  community.general.sefcontext:
+    target: '/srv/samba/compartido(/.*)?'
+    setype: samba_share_t
+    state: present
+  register: samba_context
+  when: ansible_facts.selinux is defined and ansible_facts.selinux.status == 'enabled'
+
+- name: Restaurar etiquetas Samba cuando cambie regla
+  ansible.builtin.command: restorecon -RF /srv/samba/compartido
+  when: samba_context is changed
+
+- name: Publicar configuracion Samba
   ansible.builtin.template:
     src: smb.conf.j2
     dest: /etc/samba/smb.conf
     owner: root
     group: root
     mode: '0644'
-    backup: true
+    validate: 'testparm -s %s'
   notify: Reiniciar Samba
-
-- name: Verificar configuracion Samba
-  ansible.builtin.command:
-    cmd: testparm -s
-  changed_when: false
 
 - name: Habilitar e iniciar Samba
   ansible.builtin.systemd:
     name: smb
     enabled: true
     state: started
-- name: Comprobar si existe usuario Samba
+
+- name: Consultar registro de usuario Samba
   ansible.builtin.command:
-    argv:
-      - pdbedit
-      - -L
-      - -u
-      - usuario_samba
-  register: samba_usuario
-  failed_when: false
+    argv: [pdbedit, -L, -u, usuario_samba]
+  register: samba_check
+  failed_when: samba_check.rc not in [0, 1]
   changed_when: false
 
-- name: Registrar usuario Samba con contraseña
+- name: Crear cuenta Samba solo si no existe
   ansible.builtin.command:
-    argv:
-      - smbpasswd
-      - -s
-      - -a
-      - usuario_samba
+    argv: [smbpasswd, -s, -a, usuario_samba]
     stdin: "{{ vault_samba_password }}\n{{ vault_samba_password }}"
-    stdin_add_newline: true
-  when: samba_usuario.rc != 0
+  when: samba_check.rc != 0
   no_log: true
 
-- name: Habilitar usuario Samba
+- name: Habilitar cuenta Samba cuando se ha creado
   ansible.builtin.command:
-    argv:
-      - smbpasswd
-      - -e
-      - usuario_samba
-  when: samba_usuario.rc != 0
+    argv: [smbpasswd, -e, usuario_samba]
+  when: samba_check.rc != 0
   no_log: true
-- name: Permitir Samba en el firewall
+
+- name: Comprobar configuracion de Samba
+  ansible.builtin.command: testparm -s
+  changed_when: false
+
+- name: Habilitar SMB en firewall solamente para laboratorio
   ansible.posix.firewalld:
-    service: samba
+    zone: "{{ lab_firewall_zone | default('public') }}"
+    rich_rule: 'rule family="ipv4" source address="{{ item }}" service name="samba" accept'
     permanent: true
     immediate: true
     state: enabled
+  loop: "{{ lab_client_cidrs }}"

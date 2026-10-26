@@ -1,7 +1,17 @@
 ---
-- name: Desplegar LAMP, Samba y FTP en openSUSE 16.0
+- name: Desplegar LAMP, Samba, FTP y PostgreSQL en openSUSE Leap 16.0
   hosts: servidor
   become: true
+  gather_facts: true
+  pre_tasks:
+    - name: Exigir red de laboratorio declarada, no publica
+      ansible.builtin.assert:
+        that:
+          - lab_client_cidrs is defined
+          - lab_client_cidrs | length > 0
+          - postgresql_client_cidrs is defined
+          - postgresql_client_cidrs | length > 0
+        fail_msg: "Configura group_vars/all/lab.yml con CIDR reales, no IP antiguas."
   roles:
     - firewall
     - apache
@@ -10,3 +20,4 @@
     - phpmyadmin
     - samba
     - ftp
+    - postgresql
