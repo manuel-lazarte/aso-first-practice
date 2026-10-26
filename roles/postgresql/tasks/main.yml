@@ -6,6 +6,8 @@
       - postgresql_client_cidrs | length > 0
       - postgresql_server_name is defined
       - postgresql_server_name | length > 0
+      - postgresql_server_ip is defined
+      - postgresql_server_ip | length > 0
       - vault_postgresql_admin_password is defined
       - vault_postgresql_app_password is defined
     fail_msg: 'Define postgresql_client_cidrs, postgresql_server_name y secretos en Vault.'
@@ -29,6 +31,21 @@
     fail_msg: 'Genera primero los certificados con scripts/generate-postgres-lab-certs.sh.'
   loop: '{{ postgresql_cert_files.results }}'
   no_log: true
+
+- name: Validar firma, vigencia, SAN DNS/IP, clave privada y permisos antes de instalar TLS
+  ansible.builtin.command:
+    argv:
+      - bash
+      - '{{ playbook_dir }}/scripts/validate-postgres-certs.sh'
+      - '{{ postgresql_tls_ca_src }}'
+      - '{{ postgresql_tls_cert_src }}'
+      - '{{ postgresql_tls_key_src }}'
+      - '{{ postgresql_server_name }}'
+      - '{{ postgresql_server_ip }}'
+  delegate_to: localhost
+  become: false
+  changed_when: false
+  no_log: false
 
 - name: Instalar PostgreSQL cliente y servidor, psycopg y extension PHP
   ansible.builtin.zypper:
@@ -223,27 +240,19 @@
   no_log: true
   changed_when: false
 
-- name: Comprobar modulo PHP de Apache mediante prueba HTTP temporal
-  block:
-    - name: Publicar temporalmente probe de extensiones sin datos sensibles
-      ansible.builtin.copy:
-        dest: /srv/www/htdocs/aso-php-pgsql-check.php
-        owner: root
-        group: root
-        mode: '0644'
-        content: "<?php http_response_code(extension_loaded('pgsql') && extension_loaded('pdo_pgsql') ? 200 : 500); echo 'ASO_PGSQL_EXTENSIONS'; ?>"
-    - name: Solicitar probe PHP desde Apache en localhost
-      ansible.builtin.uri:
-        url: http://127.0.0.1/aso-php-pgsql-check.php
-        status_code: 200
-        return_content: true
-      register: php_http_probe
-      failed_when: php_http_probe.status != 200 or (php_http_probe.content | trim) != 'ASO_PGSQL_EXTENSIONS'
-  always:
-    - name: Borrar probe inmediatamente de la web
-      ansible.builtin.file:
-        path: /srv/www/htdocs/aso-php-pgsql-check.php
-        state: absent
+# La página PHP ya está gestionada idempotentemente por roles/php. Nunca
+# crear/borrar ficheros temporales en cada ejecución: cambia el recap.
+- name: Comprobar Apache/PHP y extensiones pgsql en la página idempotente
+  ansible.builtin.uri:
+    url: http://127.0.0.1/prueba.php
+    status_code: 200
+    return_content: true
+  register: php_http_probe
+  changed_when: false
+  failed_when: >-
+    php_http_probe.status != 200 or
+    'PHP_OK' not in (php_http_probe.content | default('')) or
+    'PDO_PGSQL_OK' not in (php_http_probe.content | default(''))
 
 - name: Permitir puerto PostgreSQL solo desde cliente autorizado
   ansible.posix.firewalld:
