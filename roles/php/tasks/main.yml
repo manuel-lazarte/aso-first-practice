@@ -1,7 +1,7 @@
 ---
-- name: Instalar PHP y mod_php8 para Apache
+- name: Instalar PHP, CLI y mod_php8 para Apache
   ansible.builtin.zypper:
-    name: [php8, apache2-mod_php8, php8-mysql]
+    name: [php8, php8-cli, apache2-mod_php8, php8-mysql]
     state: present
   notify: Reiniciar Apache
 
